@@ -31,7 +31,7 @@ class SymmetricL2Agent:
             bid_qty = ask_qty = qty
 
         # Final quotes at 2nd L2 levels
-        bid_quote = (bid_l2+10000, bid_qty)
-        ask_quote = (ask_l2+20000, ask_qty)
+        bid_quote = (bid_l2, bid_qty)
+        ask_quote = (ask_l2, ask_qty)
 
         return bid_quote, ask_quote

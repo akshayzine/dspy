@@ -90,9 +90,9 @@ def run_simulation(config: dict):
         sim.prev_cash = initial_cash
 
         print(f"\nRunning simulation for interval {start_str} → {end_str}")
-        for _ in range(11):
+        for _ in range(len(df)):
             sim.step()
-            print('sim_inventory:', sim.inventory)
+            
 
         
         print('sim_inventory:', sim.inventory)
