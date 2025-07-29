@@ -1,0 +1,47 @@
+[project]
+name = "dspy"
+version = "0.1.0"
+description = "DS Python System"
+readme = "README.md"
+authors = [
+    { name = "Martin", email = "martin@tripudium.tech" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "ipykernel>=6.29.5",
+    "ipython==8.32.0",
+    "matplotlib>=3.10.1",
+    "numpy>=2.2.3",
+    "pathlib>=1.0.1",
+    "polars>=1.23.0",
+    "pybit>=5.9.0",
+    "pytest>=8.3.4",
+    "pytz>=2025.1",
+    "ruff>=0.9.9",
+    "tardis-dev>=2.0.0a14",
+    "tqdm>=4.67.1",
+    "typing>=3.10.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "jupyterlab",
+    "ipykernel",
+]
+
+[project.scripts]
+dspy = "dspy:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = ["pytest"]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "--maxfail=1 --disable-warnings -q"
+testpaths = [
+    "tests",
+]
