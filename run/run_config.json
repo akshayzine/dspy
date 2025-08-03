@@ -3,7 +3,7 @@
   "product": "BTCUSDT",
   "market": "binance-futures",
   "depth": 5,
-  "latency_micros": 2,
+  "latency_micros": 2000000,
   "max_inventory": 10,
   "inventory_penalty": 0.1,
   "initial_cash": 100000,

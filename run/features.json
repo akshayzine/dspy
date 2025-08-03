@@ -3,8 +3,8 @@
     "cols": ["bids[0].price", "asks[0].price"]
   },
   "lob_price_level": [
-  { "side": "bid", "level": 2 },
-  { "side": "ask", "level": 2 }
+  { "side": "bid", "level": 0 },
+  { "side": "ask", "level": 0 }
 ],
   "inventory": {}
 }

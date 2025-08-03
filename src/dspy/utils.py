@@ -10,6 +10,7 @@ import calendar
 import re
 from datetime import datetime, timedelta,timezone
 import pytz
+import polars as pl
 
 def nanoseconds(input: Union[str, datetime]) -> int:
     """
@@ -117,3 +118,8 @@ def to_ns(x: str) -> int:
     Example: 2025-04-01 09:30:00 → "1743465600287000000"
     """
     return int(datetime.fromisoformat(x).replace(tzinfo=timezone.utc).timestamp() * 1e9)
+
+def add_ts_dt(df: pl.DataFrame, ts_col: str = "ts") -> pl.DataFrame:
+    return df.with_columns(
+        pl.col(ts_col).cast(pl.Datetime("ns")).alias("ts_dt")
+    )
