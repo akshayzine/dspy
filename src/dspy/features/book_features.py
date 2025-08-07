@@ -15,8 +15,7 @@ def add_mid(df: pl.DataFrame, products: list[str] | None = None, cols: list[str]
     Add a mid column to the DataFrame.
     """
     if products is None:
-        products = get_products(df, cols)
-        
+        products = get_products(df, [])
     if products == []:
         return df.with_columns(
             ((pl.col(f"{cols[0]}") + pl.col(f"{cols[1]}"))/2).alias('mid'))
@@ -30,7 +29,7 @@ def add_spread(df: pl.DataFrame, products: list[str] | None = None, cols: list[s
     Add a spread column to the DataFrame.
     """
     if products is None:
-        products = get_products(df, cols)
+        products = get_products(df, [])
 
     if products == []:
         return df.with_columns(
@@ -45,8 +44,7 @@ def add_volume(df: pl.DataFrame, products: list[str] | None = None, cols: list[s
     Add a volume column to the DataFrame.
     """
     if products is None:
-        products = get_products(df, cols)
-
+        products = get_products(df, [])
     if products == []:
         return df.with_columns(
             (pl.col(f"{cols[0]}") + pl.col(f"{cols[1]}")).alias('volume'))
@@ -60,7 +58,7 @@ def add_vwap_l1(df: pl.DataFrame, products: list[str] | None = None, cols: list[
     Add a VWAP column to the DataFrame.
     """
     if products is None:
-        products = get_products(df, cols)
+        products = get_products(df, [])
 
     if products == []:
         df = df.with_columns(
@@ -95,12 +93,10 @@ def add_rel_returns(df: pl.DataFrame, cols: list[str]=['mid'], products: list[st
     """
     Add a relative return column to the DataFrame.
     """
-    print("Adding relative returns...")
     if products is None:
-        products = get_products(df, cols)
+        products = get_products(df, [])
     if isinstance(cols, str):
         cols = [cols]
-    print("Products:", products)
     if products == []:
         df = df.with_columns(
             # pl.col(f"{cols[0]}").pct_change().alias("rel_return")
@@ -122,7 +118,7 @@ def add_log_returns(df: pl.DataFrame, products: list[str] | None = None, cols: l
     Add a log return column to the DataFrame.
     """
     if products is None:
-        products = get_products(df, cols)
+        products = get_products(df, [])
     if isinstance(cols, str):
         cols = [cols]
 
@@ -154,8 +150,7 @@ def add_lob_price_level(
     alias = f"lob_price_level_{side}_{level}"
 
     if products is None:
-        products = get_products(df,col_name)
-
+        products = get_products(df,[])
 
     if products == []:
         return df.with_columns(
@@ -194,7 +189,7 @@ def add_price_snapshot(
         raise ValueError(f"Requested level {levels} exceeds book depth {depth}")
 
     if products is None:
-        products = get_products(df, [f"asks[0].price", f"bids[0].price"])
+        products = get_products(df, [])
 
     new_cols = []
 
@@ -237,7 +232,7 @@ def add_book_imbalance(
 
     # Infer products if not provided
     if products is None:
-        products = get_products(df, ["bids[0].amount", "asks[0].amount"])
+        products = get_products(df, [])
 
     if products == []:
         bid_cols = [f"amount_b_l{i}" for i in range(levels)]
@@ -310,7 +305,7 @@ def add_vwap(
         raise ValueError(f"Requested level {levels} exceeds book depth {depth}")
 
     if products is None:
-        products = get_products(df, ["bids[0].price", "asks[0].price"])
+        products = get_products(df, [])
 
     if products == []:
         # No product suffix
@@ -437,17 +432,17 @@ def add_ret_tick(
     """
     if base_col == "mid":
         col_prefix = "mid"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_mid(df, products=products)
     elif base_col == "vwap":
         col_prefix = f"vwap_level{levels}"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
     else:
         raise ValueError("base_col must be 'mid' or 'vwap'.")
 
     if products is None:
-        products = get_products(df, [col_prefix])
+        products = get_products(df, [])
 
     if products == []:
         ret_col = (
@@ -467,7 +462,6 @@ def add_ret_tick(
             df = df.with_columns(
                 ((pl.col(col) - pl.col(col).shift(ticks)) / pl.col(col)).alias(ret_col)
             )
-
     return df.drop_nulls()
 
 
@@ -482,27 +476,23 @@ def add_realized_vol_time(
 ) -> pl.DataFrame:
     if time_col not in df.columns:
         df = add_ts_dt(df)
-
     if base_col == "mid":
         col_prefix = "mid"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_mid(df, products=products)
     elif base_col == "vwap":
         col_prefix = f"vwap_level{levels}"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
     else:
         raise ValueError("base_col must be 'mid' or 'vwap'.")
-
     if products is None:
-        products = get_products(df, [col_prefix])
+        products = get_products(df, [])
 
     window_str = f"{window}ms"
-
     if products == []:
         ret_col = f"__ret_tmp_{col_prefix}"
         vol_col = f"realized_vol_{window}ms_{col_prefix}"
-
         df = df.with_columns(
             ((pl.col(col_prefix) / pl.col(col_prefix).shift(1))-1).alias(ret_col)
         )
@@ -520,7 +510,6 @@ def add_realized_vol_time(
             col = f"{col_prefix}_{product}"
             ret_col = f"__ret_tmp_{col}"
             vol_col = f"realized_vol_{window}ms_{col}"
-
             df = df.with_columns(
                 ((pl.col(col) / pl.col(col).shift(1))-1).alias(ret_col)
             )
@@ -532,7 +521,6 @@ def add_realized_vol_time(
 
             df = rolling_df.join(df.drop(ret_col), on=time_col, how="right")
             # df = df.select([col for col in df.columns if col != vol_col] + [vol_col])
-
     return df.drop_nulls()
 
 def add_realized_vol_tick(
@@ -545,17 +533,17 @@ def add_realized_vol_tick(
 ) -> pl.DataFrame:
     if base_col == "mid":
         col_prefix = "mid"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_mid(df, products=products)
     elif base_col == "vwap":
         col_prefix = f"vwap_level{levels}"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
     else:
         raise ValueError("base_col must be 'mid' or 'vwap'.")
 
     if products is None:
-        products = get_products(df, [col_prefix])
+        products = get_products(df, [])
 
     if products == []:
         ret_col = f"__ret_tmp_{col_prefix}"
@@ -608,17 +596,17 @@ def add_ret_time(
     # Ensure price column exists
     if base_col == "mid":
         col_prefix = "mid"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_mid(df, products=products)
     elif base_col == "vwap":
         col_prefix = f"vwap_level{levels}"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
     else:
         raise ValueError("base_col must be 'mid' or 'vwap'.")
 
     if products is None:
-        products = get_products(df, [col_prefix])
+        products = get_products(df, [])
 
     if products == []:
         price_col = col_prefix
@@ -687,17 +675,17 @@ def add_zscore_time(
 
     if base_col == "mid":
         col_prefix = "mid"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_mid(df, products=products)
     elif base_col == "vwap":
         col_prefix = f"vwap_level{levels}"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
     else:
         raise ValueError("base_col must be 'mid' or 'vwap'.")
 
     if products is None:
-        products = get_products(df, [col_prefix])
+        products = get_products(df, [])
 
     window_str = f"{window_ms}ms"
 
@@ -769,17 +757,17 @@ def add_zscore_tick(
     """
     if base_col == "mid":
         col_prefix = "mid"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_mid(df, products=products)
     elif base_col == "vwap":
         col_prefix = f"vwap_level{levels}"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
     else:
         raise ValueError("base_col must be 'mid' or 'vwap'.")
 
     if products is None:
-        products = get_products(df, [col_prefix])
+        products = get_products(df, [])
 
     if products == []:
         z_col = f"zscore_t{ticks}_{col_prefix}"
@@ -816,21 +804,21 @@ def add_avg_time(
 
     if base_col == "mid":
         col_prefix = "mid"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_mid(df, products=products)
     elif base_col == "vwap":
         col_prefix = f"vwap_level{levels}"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
     elif base_col == "spread":
         col_prefix = "spread"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_spread(df, products=products)
     else:
         raise ValueError("base_col must be 'mid', 'vwap', or 'spread'.")
 
     if products is None:
-        products = get_products(df, [col_prefix])
+        products = get_products(df, [])
 
     window_str = f"{window}ms"
 
@@ -867,21 +855,21 @@ def add_std_time(
 
     if base_col == "mid":
         col_prefix = "mid"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_mid(df, products=products)
     elif base_col == "vwap":
         col_prefix = f"vwap_level{levels}"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
     elif base_col == "spread":
         col_prefix = "spread"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_spread(df, products=products)
     else:
         raise ValueError("base_col must be 'mid', 'vwap', or 'spread'.")
 
     if products is None:
-        products = get_products(df, [col_prefix])
+        products = get_products(df, [])
 
     window_str = f"{window}ms"
 
@@ -928,24 +916,24 @@ def add_avg_tick(
     """
     if base_col == "mid":
         col_prefix = "mid"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_mid(df, products=products)
 
     elif base_col == "vwap":
         col_prefix = f"vwap_level{levels}"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
 
     elif base_col == "spread":
         col_prefix = "spread"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_spread(df, products=products)
 
     else:
         raise ValueError("base_col must be 'mid', 'vwap', or 'spread'.")
 
     if products is None:
-        products = get_products(df, [col_prefix])
+        products = get_products(df, [])
 
     if products == []:
         avg_col = f"avg_t{ticks}_{col_prefix}"
@@ -987,24 +975,24 @@ def add_std_tick(
     """
     if base_col == "mid":
         col_prefix = "mid"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_mid(df, products=products)
 
     elif base_col == "vwap":
         col_prefix = f"vwap_level{levels}"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
 
     elif base_col == "spread":
         col_prefix = "spread"
-        if not any(col.startswith(col_prefix) for col in df.columns):
+        if col_prefix not in df.columns:
             df = add_spread(df, products=products)
 
     else:
         raise ValueError("base_col must be 'mid', 'vwap', or 'spread'.")
 
     if products is None:
-        products = get_products(df, [col_prefix])
+        products = get_products(df, [])
 
     if products == []:
         std_col = f"std_t{ticks}_{col_prefix}"

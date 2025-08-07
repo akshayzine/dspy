@@ -14,6 +14,7 @@ from dspy.utils import to_ns, ts_to_str
 from dspy.features.feature_utils import apply_batch_features, extract_features , flatten_features
 from dspy.agents.agent_utils import get_agent
 
+
 # ---------- Load run config file ----------
 
 def load_config(path: Path) -> dict:
@@ -49,6 +50,8 @@ def run_simulation(config: dict):
     feature_path = Path(__file__).parent / "features.json"
     feature_config = load_config(feature_path)
     inventory_feature_flag = "inventory" in feature_config.keys()
+    active_quotes_flag = "active_quotes" in feature_config.keys()
+
 
     for interval in intervals:
         start_str = interval["start"]
@@ -56,7 +59,7 @@ def run_simulation(config: dict):
 
         start_ts = datetime.strptime(interval["start"], "%Y-%m-%d %H:%M:%S").strftime("%y%m%d.%H%M%S")
         end_ts   = datetime.strptime(interval["end"],   "%Y-%m-%d %H:%M:%S").strftime("%y%m%d.%H%M%S")
-
+        # Load book data for the interval
         df = loader.load_book(
             product=product,
             times=[start_ts, end_ts],
@@ -64,15 +67,20 @@ def run_simulation(config: dict):
             type="book_snapshot_25",
             lazy=False
         )
-
+        # Get features from the book data
         df, feature_cols = apply_batch_features(df, feature_config)
-
-        agent = get_agent(config)
-
+        feature_cols = [col for col in feature_cols if df[col].dtype != pl.Datetime]
+        feature_length = len(feature_cols)+int(inventory_feature_flag) + 4*int(active_quotes_flag)
+        print(f"feature columns: {feature_cols}")
+        #Get agent from the config
+        agent = get_agent(config,feature_length)
+        
+        #Get simulator
         sim = MarketSimulator(
             book=df,
             feature_config=feature_config,
             inventory_feature_flag = inventory_feature_flag,
+            active_quotes_flag=active_quotes_flag,
             feature_columns=feature_cols,
             agent=agent,
             latency_ns=latency_ns,
@@ -90,28 +98,46 @@ def run_simulation(config: dict):
         sim.prev_cash = initial_cash
 
         print(f"\nRunning simulation for interval {start_str} → {end_str}")
-        for _ in range(11):
-            sim.step()
-            print('sim_inventory:', sim.inventory)
-
-        
-        print('sim_inventory:', sim.inventory)
-        # Square off open inventory at the final tick
-        last_row = sim.book[sim.ptr - 1]
-        sim.square_off(last_row)
-
-        # Save evaluation log
-        run_start = interval["start"]
-        run_end   = interval["end"]
-        print(run_start)
-        sim.save_eval_log(run_start, run_end)
 
 
-        print(f"Simulation complete for interval {start_str} → {end_str}")
-        print("\n--- Simulation Complete ---")
-        print(f"Final Inventory : {sim.inventory}")
-        print(f"Final Cash      : {sim.cash}")
-        print(f"Final PnL       : {sim.realized_pnl}")
+        if simulator_mode == "train":
+
+            from dspy.agents.agent_utils import load_training_handler
+
+            #select training function/config based on dqn/other
+            train_config_path, train_func = load_training_handler(config)
+            train_config = load_config(train_config_path)
+
+            # Create the SimEnv wrapper for training using the simulator
+            from dspy.sim.sim_wrapper import SimEnv
+            env_fn = lambda: SimEnv(sim)
+
+            # Run the training function with the environment
+            train_func(train_config, env_fn=env_fn,run_config= config,features_config=feature_config)
+            continue
+
+        else:
+
+            for _ in range(len(df)):
+                sim.step()
+
+            
+            # Square off open inventory at the final tick
+            last_row = sim.book[sim.ptr - 1]
+            sim.square_off(last_row)
+
+            # Save evaluation log
+            run_start = interval["start"]
+            run_end   = interval["end"]
+            print(run_start)
+            sim.save_eval_log(run_start, run_end)
+
+
+            print(f"Simulation complete for interval {start_str} → {end_str}")
+            print("\n--- Simulation Complete ---")
+            print(f"Final Inventory : {sim.inventory}")
+            print(f"Final Cash      : {sim.cash}")
+            print(f"Final PnL       : {sim.realized_pnl}")
 
 
 # ---------- Entrypoint ----------

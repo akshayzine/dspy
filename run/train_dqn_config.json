@@ -1,0 +1,17 @@
+{
+  "device": "cpu",
+  "lr": 0.00025,
+  "gamma": 0.99,
+  "epsilon_start": 1.0,
+  "epsilon_end": 0.05,
+  "epsilon_decay": 0.995,
+  "buffer_size": 100000,
+  "batch_size": 256,
+  "sync_interval": 10,
+  "num_episodes": 100,
+  "max_grad_norm": 1.0,
+  "load_path": null,
+  "save_path": null,
+  "episode_loggging": true,
+  "step_logging": true
+}

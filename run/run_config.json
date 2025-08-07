@@ -14,16 +14,14 @@
 
   "agent": {
     "type": "symmetric_l2",
-    "mode": "fixed",
-    "load_path": "src/dspy/agents/symmetric_l2"
+    "mode": "eval"
   },
 
   "simulator_mode": "eval",
-
   "intervals": [
     {
       "start": "2025-04-01 00:00:00",
-      "end": "2025-04-02 12:59:59"
+      "end": "2025-04-01 00:00:30"
     }
   ]
 }
