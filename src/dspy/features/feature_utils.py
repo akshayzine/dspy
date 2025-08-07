@@ -22,7 +22,6 @@ def apply_batch_features(df, feature_config: dict) -> tuple[pl.DataFrame, list[s
             continue
 
         func = entry["func"]
-
         # If config is a list of param sets, apply each one
         if isinstance(config, list):
             for sub_cfg in config:
@@ -49,28 +48,58 @@ def extract_features(
     row,
     feature_columns: list[str],
     include_inventory: bool = False,
-    inventory: float = 0.0
-) -> np.ndarray:
+    inventory: float = 0.0,
+    include_active_quotes: bool = False,
+    active_quotes: dict = None,
+    scale_features: bool = False,
+    max_inventory: float = 5.0,
+    tick_size: float = 0.1
+) -> list[float]:
     """
-    Extracts the agent input vector from a Polars row.
-
-    Parameters:
-    - row: current row of the DataFrame (pl.Row)
-    - feature_columns: list of feature column names to extract
-    - include_inventory: whether to include inventory in input
-    - inventory: current inventory value
+    Efficiently extracts a flat list of floats from a LOB snapshot row.
+    Designed for high-frequency applications.
 
     Returns:
-    - np.ndarray: Input vector for the agent
+        list[float]: Feature vector.
     """
-    # input_vec = [row[col] for col in feature_columns]
-    input_vec = [(row[col].item()) for col in feature_columns] #more strick
+    # --- Fast extraction using polars row object ---
+    if hasattr(row, "select") and callable(row.select):
+        features = list(row.select(feature_columns).row(0))  # Efficient row extraction
+    else:
+        # fallback for dictionary-like rows
+        features = [float(row[col]) for col in feature_columns]
 
-    # input_vec = [row[col].item() if hasattr(row[col], "item") else row[col] for col in feature_columns]
+    # --- Calculate midprice ---
+    if "mid" in feature_columns:
+        mid = row["mid"].item()
+    else:
+        try:
+            mid = (row["asks[0].price"].item() + row["bids[0].price"].item()) / 2
+        except KeyError:
+            raise KeyError("Midprice not found and best bid/ask not present to compute it.")
 
+    # --- Append active quote features ---
+    if include_active_quotes and active_quotes is not None:
+        bid_px = active_quotes["bid_px"]
+        ask_px = active_quotes["ask_px"]
+        bid_qty = active_quotes["bid_qty"]
+        ask_qty = active_quotes["ask_qty"]
+        if scale_features:
+            features.append((bid_px - mid) / tick_size if bid_px != 0.0 else 0.0)
+            features.append((ask_px - mid) / tick_size if ask_px != 0.0 else 0.0)
+            features.append(bid_qty / max_inventory)
+            features.append(ask_qty / max_inventory)
+        else:
+            features.append(bid_px)
+            features.append(ask_px)
+            features.append(bid_qty)
+            features.append(ask_qty)
+
+    # --- Append inventory ---
     if include_inventory:
-        input_vec.append(inventory)
-    return np.array(input_vec, dtype=np.float32)
+        features.append(inventory / max_inventory if scale_features else inventory)
+
+    return features  # Flat list[float] suitable for training
 
 
 def flatten_features(feature_dict: dict) -> list[float]:

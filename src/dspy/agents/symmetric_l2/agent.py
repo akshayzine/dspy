@@ -1,37 +1,65 @@
+from typing import Optional
 class SymmetricL2Agent:
-    def __init__(self, config=None):
-        if config is None:
-            config = {}
-        self.quote_qty = config.get("min_order_size", 0.01)  # fallback default
-        self.max_inventory = config.get("max_inventory", 10)
-
-    def get_quotes(self, state: list[float]) -> tuple[tuple[float, float], tuple[float, float]]:
+    def __init__(
+        self,
+        tick_size: float,
+        min_order_size: float = 0.001,
+        max_inventory: float = 5.0,
+        base_quote_size:  Optional[float] = None,
+        
+    ):
         """
-        Inputs:
-            state = [mid, lob_bid_2, lob_ask_2, inventory]
-        Outputs:
-            ((bid_price, bid_qty), (ask_price, ask_qty))
+        Symmetric L2 agent that always quotes at second level (best ± tick)
+        with inventory-aware quantity sizing.
+
+        Args:
+            tick_size (float): Minimum price increment.
+            base_quote_size (float): Default quantity to quote when neutral.
+            min_order_size (float): Minimum order size allowed.
+            max_inventory (float): Inventory constraint for quoting.
         """
-        mid, bid_l2, ask_l2, inventory = state
+        if base_quote_size is None:
+            base_quote_size = min_order_size
+        self.tick_size = tick_size
+        self.base_quote_size = base_quote_size
+        self.min_order_size = min_order_size
+        self.max_inventory = max_inventory
+        self.inventory = 0  # Will be set by the simulator
 
-        # Base quantity to quote
-        qty = self.quote_qty
+    def get_quotes_eval(self, state, lob_state):
+        """
+        Generate symmetric bid/ask quotes based on LOB and inventory.
 
-        # Inventory-based scaling
-        if inventory > 0:
-            # Holding too much → favor selling
+        Args:
+            state: Feature vector (not used).
+            lob_state: [best_ask, best_bid]
+
+        Returns:
+            dict: Quotes {"bid_px", "bid_qty", "ask_px", "ask_qty"}
+        """
+        best_ask, best_bid = lob_state
+        bid_px = best_bid - self.tick_size
+        ask_px = best_ask + self.tick_size
+
+        qty = self.base_quote_size
+        inv = getattr(self, "inventory", 0)
+
+        # Inventory-aware quantity allocation
+        if inv > 0:
+            # Long: prefer to sell
             bid_qty = qty
-            ask_qty = min(inventory, self.max_inventory)  # sell more
-        elif inventory < 0:
-            # Short → favor buying
-            bid_qty = min(-inventory, self.max_inventory)  # buy more
+            ask_qty = max(self.min_order_size, min(inv, self.max_inventory))
+        elif inv < 0:
+            # Short: prefer to buy
+            bid_qty = max(self.min_order_size, min(-inv, self.max_inventory))
             ask_qty = qty
         else:
             # Neutral
             bid_qty = ask_qty = qty
 
-        # Final quotes at 2nd L2 levels
-        bid_quote = (bid_l2, bid_qty)
-        ask_quote = (ask_l2, ask_qty)
-
-        return bid_quote, ask_quote
+        return {
+            "bid_px": bid_px,
+            "bid_qty": bid_qty,
+            "ask_px": ask_px,
+            "ask_qty": ask_qty,
+        }
