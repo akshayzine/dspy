@@ -9,9 +9,9 @@ class DQNAgent:
         tick_size: float,
         min_order_size: float,
         max_inventory: float,
+        device: str = "cpu",
         base_quote_size: float = 0.1,
         epsilon: float = 0.1,
-        device: str = "cpu",
         max_quote_level: int =4,
         action_set: list[list[int]] = None
     ):
@@ -60,9 +60,10 @@ class DQNAgent:
         if explore and np.random.rand() < self.epsilon:
             self.action_idx = np.random.randint(len(self.action_set))  # Random action
         else:
-            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
-            q_values = self.model(state_tensor)  # Shape: [1, num_actions]
-            self.action_idx = torch.argmax(q_values).item()
+            with torch.no_grad():
+                state_tensor = torch.from_numpy(state) if isinstance(state, np.ndarray) else torch.tensor(state, dtype=torch.float32)
+                q_values = self.model(state_tensor.unsqueeze(0).to(self.device))  # Shape: [1, num_actions]
+                self.action_idx = int(q_values.argmax(dim=1))
 
         return self.action_idx
 
@@ -73,7 +74,7 @@ class DQNAgent:
         """
         self.action_idx = idx
 
-    def get_quotes(self, state: list[float], lob_state: list[float]) -> dict:
+    def get_quotes(self, state: list[float], best_ask: float, best_bid: float) -> dict:
         """
         Generates final quote prices and sizes based on:
           - Discrete action
@@ -82,7 +83,8 @@ class DQNAgent:
 
         Args:
             state: Feature vector (used for model input)
-            lob_state: [best_ask, best_bid] prices from raw LOB
+            best_ask
+            best_bid
 
         Returns:
             dict: {
@@ -91,14 +93,13 @@ class DQNAgent:
             }
         """
         ask_offset, bid_offset = self.action_set[self.action_idx]
-        best_ask, best_bid = lob_state
 
         # Action is defined in LOB ticks from best ask/bid
         bid_px = best_bid - (bid_offset - 1) * self.tick_size
         ask_px = best_ask + (ask_offset - 1) * self.tick_size
 
 
-        qty = self.base_quote_size
+        qty = self.min_order_size
         inv = getattr(self, "inventory", 0)  # Get current inventory from sim
 
         # Inventory-based quantity logic
@@ -127,7 +128,7 @@ class DQNAgent:
         """
         self.last_quotes = quotes
 
-    def get_quotes_eval(self, state: list[float], lob_state: list[float]) -> dict:
+    def get_quotes_eval(self, state: list[float], best_ask: float, best_bid: float) -> dict:
         """
         Evaluation-time quote generator:
         - Uses greedy action (no exploration)
@@ -135,10 +136,11 @@ class DQNAgent:
 
         Args:
             state: feature vector
-            lob_state: [best_ask, best_bid]
+            best_ask
+            best_bid
 
         Returns:
             dict: {bid_px, ask_px, bid_qty, ask_qty}
         """
         self.act(state, explore=False)
-        return self.get_quotes(state, lob_state)
+        return self.get_quotes(state, best_ask,best_bid)

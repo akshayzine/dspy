@@ -8,13 +8,40 @@ import numpy as np
 # apply_batch_features:
 # Applies all batch-level features to the full Polars DataFrame BEFORE simulation
 # ----------------------------------------------------------------------------
-def apply_batch_features(df, feature_config: dict) -> tuple[pl.DataFrame, list[str]]:
-    """
-    Applies all batch features specified in the config and returns:
-    - updated DataFrame
-    - list of added feature column names
-    """
+# def apply_batch_features(df, feature_config: dict) -> tuple[pl.DataFrame, list[str]]:
+#     """
+#     Applies all batch features specified in the config and returns:
+#     - updated DataFrame
+#     - list of added feature column names
+#     """
+#     used_columns = []
+
+#     for key, config in feature_config.items():
+#         entry = FEATURE_REGISTRY.get(key)
+#         if not entry or entry["type"] != "batch":
+#             continue
+
+#         func = entry["func"]
+#         # If config is a list of param sets, apply each one
+#         if isinstance(config, list):
+#             for sub_cfg in config:
+#                 df_before = df.columns
+#                 df = func(df, **sub_cfg)
+#                 new_cols = set(df.columns) - set(df_before)
+#                 used_columns.extend(new_cols)
+#         else:
+#             df_before = df.columns
+#             df = func(df, **(config or {}))
+#             new_cols = set(df.columns) - set(df_before)
+#             used_columns.extend(new_cols)
+    
+
+#     return df, used_columns
+def apply_batch_features(df, feature_config, std_flag=False):
     used_columns = []
+    ignore_base_list =['mid','vwap','cvwap']
+    ignore_columns =[]
+    scaling_map = {}  # col_name -> (mean, std)
 
     for key, config in feature_config.items():
         entry = FEATURE_REGISTRY.get(key)
@@ -22,20 +49,68 @@ def apply_batch_features(df, feature_config: dict) -> tuple[pl.DataFrame, list[s
             continue
 
         func = entry["func"]
-        # If config is a list of param sets, apply each one
+
         if isinstance(config, list):
-            for sub_cfg in config:
-                df_before = df.columns
-                df = func(df, **sub_cfg)
-                new_cols = set(df.columns) - set(df_before)
-                used_columns.extend(new_cols)
+            configs_to_apply = config
         else:
+            configs_to_apply = [config]
+
+        for sub_cfg in configs_to_apply:
+            # Remove scaling params before calling the function
+            func_args = {k: v for k, v in sub_cfg.items() if k not in ("scaling_mean", "scaling_std")}
+
             df_before = df.columns
-            df = func(df, **(config or {}))
+            df = func(df, **func_args)
             new_cols = set(df.columns) - set(df_before)
+            
+            if sub_cfg.get("base_col"):
+                if sub_cfg["base_col"] in ignore_base_list:
+                    if sub_cfg["base_col"] == "mid":
+                        col_to_ignore="mid"
+                        # ignore_columns.extend("mid")
+                    elif (sub_cfg["base_col"] == "vwap"):
+                        col_to_ignore = f'vwap_level{sub_cfg["levels"]}'
+                        # ignore_columns.extend(f"vwap_level{sub_cfg["levels"]}")
+                    elif (sub_cfg["base_col"] == "cvwap"):
+                        col_to_ignore = f'cvwap_level{sub_cfg["levels"]}'
+                    # ignore_columns.extend(f"cvwap_level{sub_cfg["levels"]}")
+                    new_cols = [col for col in new_cols if col != col_to_ignore]
+            new_cols = [col for col in new_cols if df[col].dtype != pl.Datetime]
             used_columns.extend(new_cols)
+    
+            mean, std = 0, 1
+            if std_flag:
+                # Only set mean/std if BOTH are present, else default (0,1)
+                if "scaling_mean" in sub_cfg and "scaling_std" in sub_cfg:
+                    mean = sub_cfg["scaling_mean"]
+                    std  = sub_cfg["scaling_std"]
+                    
+
+            for col in new_cols:
+                if df[col].dtype != pl.Datetime:
+                    scaling_map[col] = (mean, std)
+    
+    # remove datetime columns from used_columns
+    used_columns = [col for col in used_columns if df[col].dtype != pl.Datetime]
+    used_columns = [col for col in used_columns if col != "mid"]
+    
+    # deduplicate while preserving order
+    used_columns = list(dict.fromkeys(used_columns))
+    
+    # Standardize features using scaling_map
+    if std_flag:
+        for col in used_columns:
+            if col in scaling_map:
+                mean, std = scaling_map[col]
+                if std != 0:
+                    df = df.with_columns(
+                            ((pl.col(col) - mean) / std)
+                            .clip(lower_bound=-5, upper_bound=5)  # clip after scaling
+                            .alias(col)
+                        )
 
     return df, used_columns
+
 
 
 
@@ -63,6 +138,7 @@ def extract_features(
         list[float]: Feature vector.
     """
     # --- Fast extraction using polars row object ---
+
     if hasattr(row, "select") and callable(row.select):
         features = list(row.select(feature_columns).row(0))  # Efficient row extraction
     else:
@@ -85,8 +161,8 @@ def extract_features(
         bid_qty = active_quotes["bid_qty"]
         ask_qty = active_quotes["ask_qty"]
         if scale_features:
-            features.append((bid_px - mid) / tick_size if bid_px != 0.0 else 0.0)
-            features.append((ask_px - mid) / tick_size if ask_px != 0.0 else 0.0)
+            features.append((bid_px - mid) / (5*tick_size) if bid_px != 0.0 else 0.0)
+            features.append((ask_px - mid) / (5*tick_size) if ask_px != 0.0 else 0.0)
             features.append(bid_qty / max_inventory)
             features.append(ask_qty / max_inventory)
         else:

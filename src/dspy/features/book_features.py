@@ -378,7 +378,7 @@ def add_cross_vwap(
 
         cvwap_expr = (
             (pl.sum_horizontal(numerator_exprs) / pl.sum_horizontal(denominator_exprs))
-            .alias(f"cross_vwap_level{levels}")
+            .alias(f"cvwap_level{levels}")
         )
 
         df = df.with_columns(cvwap_expr)
@@ -396,7 +396,7 @@ def add_cross_vwap(
 
         cvwap_expr = (
             (pl.sum_horizontal(numerator_exprs) / pl.sum_horizontal(denominator_exprs))
-            .alias(f"cross_vwap_level{levels}_{product}")
+            .alias(f"cvwap_level{levels}_{product}")
         )
 
         df = df.with_columns(cvwap_expr)
@@ -438,8 +438,12 @@ def add_ret_tick(
         col_prefix = f"vwap_level{levels}"
         if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
+    elif base_col == "cvwap":
+        col_prefix = f"cvwap_level{levels}"
+        if col_prefix not in df.columns:
+            df = add_cross_vwap(df, levels=levels, depth=depth, products=products)    
     else:
-        raise ValueError("base_col must be 'mid' or 'vwap'.")
+        raise ValueError("base_col must be 'mid' or 'vwap' or 'cvwap.")
 
     if products is None:
         products = get_products(df, [])
@@ -496,14 +500,16 @@ def add_realized_vol_time(
         df = df.with_columns(
             ((pl.col(col_prefix) / pl.col(col_prefix).shift(1))-1).alias(ret_col)
         )
-
+        
+        # print(df)
         rolling_df = (
             df.rolling(index_column=time_col, period=window_str, closed="right")
             .agg([pl.col(ret_col).std().alias(vol_col)])
         )
-
+        rolling_df=rolling_df.with_columns(pl.col(vol_col).fill_nan(0).fill_null(0))
         df = rolling_df.join(df.drop(ret_col), on=time_col, how="right")
         # df = df.select([col for col in df.columns if col != vol_col] + [vol_col])
+        # print(df)
 
     else:
         for product in products:
@@ -518,6 +524,7 @@ def add_realized_vol_time(
                 df.rolling(index_column=time_col, period=window_str, closed="right")
                 .agg([pl.col(ret_col).std().alias(vol_col)])
             )
+            rolling_df=rolling_df.with_columns(pl.col(vol_col).fill_nan(0).fill_null(0))
 
             df = rolling_df.join(df.drop(ret_col), on=time_col, how="right")
             # df = df.select([col for col in df.columns if col != vol_col] + [vol_col])
@@ -539,8 +546,13 @@ def add_realized_vol_tick(
         col_prefix = f"vwap_level{levels}"
         if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
+    
+    elif base_col == "cvwap":
+        col_prefix = f"cvwap_level{levels}"
+        if col_prefix not in df.columns:
+            df = add_cross_vwap(df, levels=levels, depth=depth, products=products)    
     else:
-        raise ValueError("base_col must be 'mid' or 'vwap'.")
+        raise ValueError("base_col must be 'mid' or 'vwap' or 'cvwap.")
 
     if products is None:
         products = get_products(df, [])
@@ -602,9 +614,12 @@ def add_ret_time(
         col_prefix = f"vwap_level{levels}"
         if col_prefix not in df.columns:
             df = add_vwap(df, levels=levels, depth=depth, products=products)
+    elif base_col == "cvwap":
+        col_prefix = f"cvwap_level{levels}"
+        if col_prefix not in df.columns:
+            df = add_cross_vwap(df, levels=levels, depth=depth, products=products)    
     else:
-        raise ValueError("base_col must be 'mid' or 'vwap'.")
-
+        raise ValueError("base_col must be 'mid' or 'vwap' or 'cvwap.")
     if products is None:
         products = get_products(df, [])
 
@@ -663,7 +678,7 @@ def add_ret_time(
 
 def add_zscore_time(
     df: pl.DataFrame,
-    window_ms: int = 500,
+    window: int = 500,
     base_col: str = "mid",            # 'mid' or 'vwap'
     levels: int = 1,
     depth: int = 5,
@@ -687,12 +702,12 @@ def add_zscore_time(
     if products is None:
         products = get_products(df, [])
 
-    window_str = f"{window_ms}ms"
+    window_str = f"{window}ms"
 
     if products == []:
         mean_col = f"__mean_tmp_{col_prefix}"
         std_col = f"__std_tmp_{col_prefix}"
-        z_col = f"zscore_{window_ms}ms_{col_prefix}"
+        z_col = f"zscore_{window}ms_{col_prefix}"
 
         rolling_stats = (
             df.rolling(index_column=time_col, period=window_str, closed="right")
@@ -702,17 +717,23 @@ def add_zscore_time(
             ])
         )
 
+        rolling_stats =rolling_stats.with_columns(pl.col(mean_col).fill_nan(0).fill_null(0))
+        rolling_stats =rolling_stats.with_columns(pl.col(std_col).fill_nan(0).fill_null(0))
         df = df.join(rolling_stats, on=time_col, how="right")
         df = df.with_columns(
-            ((pl.col(col_prefix) - pl.col(mean_col)) / (pl.col(std_col)+1e-10)).alias(z_col)
+            (pl.when(pl.col(std_col) < 1e-10)
+                 .then(0.0)
+                 .otherwise((pl.col(col_prefix) - pl.col(mean_col)) / pl.col(std_col)).clip(-10, 10)
+                 ).alias(z_col)
         ).drop([mean_col, std_col])
+        
 
     else:
         for product in products:
             col = f"{col_prefix}_{product}"
             mean_col = f"__mean_tmp_{col}"
             std_col = f"__std_tmp_{col}"
-            z_col = f"zscore_{window_ms}ms_{col}"
+            z_col = f"zscore_{window}ms_{col}"
 
             rolling_stats = (
                 df.rolling(index_column=time_col, period=window_str, closed="right")
@@ -721,11 +742,16 @@ def add_zscore_time(
                     pl.col(col).std().alias(std_col),
                 ])
             )
+            rolling_stats =rolling_stats.with_columns(pl.col(mean_col).fill_nan(0).fill_null(0))
+            rolling_stats =rolling_stats.with_columns(pl.col(std_col).fill_nan(0).fill_null(0))
 
             df = df.join(rolling_stats, on=time_col, how="right")
 
             df = df.with_columns(
-                ((pl.col(col) - pl.col(mean_col)) / pl.col(std_col)).alias(z_col)
+                (pl.when(pl.col(std_col) < 1e-10)
+                 .then(0.0)
+                 .otherwise((pl.col(col) - pl.col(mean_col)) / pl.col(std_col)).clip(-10, 10)
+                 ).alias(z_col)
             ).drop([mean_col, std_col])
 
     return df.drop_nulls()
@@ -770,23 +796,37 @@ def add_zscore_tick(
         products = get_products(df, [])
 
     if products == []:
+        mean_col = f"__mean_tmp_{col_prefix}"
+        std_col = f"__std_tmp_{col_prefix}"
         z_col = f"zscore_t{ticks}_{col_prefix}"
+        
         df = df.with_columns([
-            (
-                (pl.col(col_prefix) - pl.col(col_prefix).rolling_mean(window_size=ticks))
-                / (pl.col(col_prefix).rolling_std(window_size=ticks)+1e-10)
-            ).alias(z_col)
+            pl.col(col_prefix).rolling_mean(window_size=ticks).alias(mean_col),
+            pl.col(col_prefix).rolling_std(window_size=ticks).alias(std_col),
         ])
+        df = df.with_columns(
+            pl.when(pl.col(std_col) < 1e-10)
+              .then(0.0)
+              .otherwise(((pl.col(col_prefix) - pl.col(mean_col)) / pl.col(std_col)).clip(-10, 10))
+              .alias(z_col)
+        ).drop([mean_col, std_col])
     else:
         for product in products:
             col = f"{col_prefix}_{product}"
+            mean_col = f"__mean_tmp_{col}"
+            std_col = f"__std_tmp_{col}"
             z_col = f"zscore_t{ticks}_{col}"
             df = df.with_columns([
-                (
-                    (pl.col(col) - pl.col(col).rolling_mean(window_size=ticks))
-                    / (pl.col(col).rolling_std(window_size=ticks)+1e-10)
-                ).alias(z_col)
+                pl.col(col).rolling_mean(window_size=ticks).alias(mean_col),
+                pl.col(col).rolling_std(window_size=ticks).alias(std_col),
             ])
+
+            df = df.with_columns(
+                pl.when(pl.col(std_col) < 1-10)
+                  .then(0.0)
+                  .otherwise(((pl.col(col) - pl.col(mean_col)) / pl.col(std_col)).clip(-10, 10))
+                  .alias(z_col)
+            ).drop([mean_col, std_col])
 
     return df.drop_nulls()
 
@@ -828,6 +868,7 @@ def add_avg_time(
             df.rolling(index_column=time_col, period=window_str, closed="right")
             .agg([pl.col(col_prefix).mean().alias(avg_col)])
         )
+        rolling_df=rolling_df.with_columns(pl.col(avg_col).fill_nan(0).fill_null(0))
         df = df.join(rolling_df, on=time_col, how="right")
     else:
         for product in products:
@@ -837,6 +878,7 @@ def add_avg_time(
                 df.rolling(index_column=time_col, period=window_str, closed="right")
                 .agg([pl.col(col).mean().alias(avg_col)])
             )
+            rolling_df=rolling_df.with_columns(pl.col(avg_col).fill_nan(0).fill_null(0))
             df = df.join(rolling_df, on=time_col, how="right")
 
     return df.drop_nulls()
@@ -879,6 +921,8 @@ def add_std_time(
             df.rolling(index_column=time_col, period=window_str, closed="right")
             .agg([pl.col(col_prefix).std().alias(std_col)])
         )
+        rolling_df=rolling_df.with_columns(pl.col(std_col).fill_nan(0).fill_null(0))
+        
         df = df.join(rolling_df, on=time_col, how="right")
     else:
         for product in products:
@@ -888,6 +932,7 @@ def add_std_time(
                 df.rolling(index_column=time_col, period=window_str, closed="right")
                 .agg([pl.col(col).std().alias(std_col)])
             )
+            rolling_df=rolling_df.with_columns(pl.col(std_col).fill_nan(0).fill_null(0))
             df = df.join(rolling_df, on=time_col, how="right")
 
     return df.drop_nulls()
@@ -1006,5 +1051,58 @@ def add_std_tick(
             df = df.with_columns([
                 pl.col(col).rolling_std(window_size=ticks).alias(std_col)
             ])
+
+    return df.drop_nulls()
+
+
+def add_wap_mid_ret(
+    df: pl.DataFrame,
+    base_col: str = "vwap",         
+    levels: int = 1,
+    depth: int = 1,
+    products: list[str] | None = None
+) -> pl.DataFrame:
+    
+    """
+    Adds the relative difference between VWAP/CVWAP and the midprice:
+        ret = (wap - mid) / mid
+
+    Parameters:
+        df (pl.DataFrame): Input DataFrame.
+        base_col (str): 'vwap' or 'cvwap'.
+        levels (int): VWAP levels (only used for 'vwap'/'cvwap').
+        depth (int): Book depth if VWAP needs to be created.
+        products (list[str] | None): Optional product suffixes.
+
+    Returns:
+        pl.DataFrame: Updated DataFrame with relative difference columns.
+    """
+
+    if base_col == "cvwap":
+        col_prefix = f"cvwap_level{levels}"
+        if col_prefix not in df.columns:
+            df = add_cross_vwap(df, levels=levels, depth=depth, products=products)
+
+    elif base_col == "vwap":
+        col_prefix = f"vwap_level{levels}"
+        if col_prefix not in df.columns:
+            df = add_vwap(df, levels=levels, depth=depth, products=products)
+
+    else:
+        raise ValueError("base_col must be 'vwap', or 'cvwap'.")
+
+    if products is None:
+        products = get_products(df, [])
+
+    if products == []:
+        df = df.with_columns(
+            ((pl.col(col_prefix) - pl.col("mid")) / pl.col("mid")).alias(f"{col_prefix}_mid_ret")
+        )
+    else:
+        for product in products:
+            col = f"{col_prefix}_{product}"
+            df = df.with_columns(
+                ((pl.col(col) - pl.col("mid")) / pl.col("mid")).alias(f"{col}_mid_ret")
+            )
 
     return df.drop_nulls()

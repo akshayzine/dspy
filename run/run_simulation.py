@@ -3,6 +3,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 import polars as pl
+import os 
+import torch
 
 
 project_root = Path(__file__).parent.parent
@@ -31,17 +33,26 @@ def run_simulation(config: dict):
     product          = config["product"]
     depth            = config["depth"]
     latency_ns       = config["latency_micros"] * 1_000
-    max_inventory    = config["max_inventory"]
     inv_penalty      = config["inventory_penalty"]
     initial_cash     = config["initial_cash"]
     agent_config     = config["agent"]
     intervals        = config["intervals"]
     min_order_size   = config["min_order_size"]
+    max_inventory    = config["max_inventory"]
     tick_size        = config["tick_size"]
     initial_cash     = config["initial_cash"]
     cost_in_bps      = config["cost_in_bps"]
     fixed_cost       = config["fixed_cost"]
     simulator_mode   = config["simulator_mode"]
+    eval_log_flag    = config["eval_log_flag"]
+    std_flag         = config["standard_scaling_feat"]
+    comp_system        = config["comp_system"]
+
+    t_device = torch.device(config["device"])
+
+    # Cap PyTorch threads when on CPU
+    if t_device.type == "cpu":
+        _configure_torch_threads_cpu()
 
     loader = get_dataset(dataset_name)
     all_books, all_ts = [], []
@@ -51,7 +62,9 @@ def run_simulation(config: dict):
     feature_config = load_config(feature_path)
     inventory_feature_flag = "inventory" in feature_config.keys()
     active_quotes_flag = "active_quotes" in feature_config.keys()
-
+    
+    now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    print('Sim started at:', now)
 
     for interval in intervals:
         start_str = interval["start"]
@@ -67,14 +80,61 @@ def run_simulation(config: dict):
             type="book_snapshot_25",
             lazy=False
         )
+        print(len(df),"dfdsfasfs")
         # Get features from the book data
-        df, feature_cols = apply_batch_features(df, feature_config)
-        feature_cols = [col for col in feature_cols if df[col].dtype != pl.Datetime]
+        if comp_system =='personal':
+            num_chunks = 10
+            chunk_size = len(df) // num_chunks # Use integer division
+            processed_data_dir = Path(__file__).parent.parent/ "chunk_data"
+            print(processed_data_dir)
+            processed_data_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Splitting the DataFrame into {num_chunks} chunks of approximately {chunk_size} rows each.")
+
+            # 3. Loop through each chunk, process it, and save it to disk
+            
+            for i in range(num_chunks):
+                feature_cols = []
+                print(f"--- Processing chunk {i+1}/{num_chunks} ---")
+                
+                # Calculate the start offset for the slice
+                offset = i * chunk_size
+                
+                # Get the current chunk using a simple slice
+                df_chunk = df.slice(offset, chunk_size)
+
+                # Apply feature engineering to the chunk
+                print(f"  - Applying batch features...")
+                df_processed_chunk, feature_cols = apply_batch_features(df_chunk, feature_config,std_flag)
+                feature_cols = [col for col in feature_cols if df_processed_chunk[col].dtype != pl.Datetime]
+
+                # Save the processed chunk to disk
+                output_path = processed_data_dir / f"processed_chunk_{i}.parquet"
+                print(f"  - Saving processed chunk to {output_path}")
+                df_processed_chunk.write_parquet(output_path)
+
+            # 4. Release memory of the huge raw DataFrame
+            print("\nReleasing memory of the original raw DataFrame...")
+            del df
+            gc.collect()
+
+
+            # 5. Load all the processed chunks from disk
+            print("--- Loading all processed chunks from disk ---")
+            all_processed_files = list(processed_data_dir.glob("*.parquet"))
+            # df = pl.read_parquet(all_processed_files)
+            df = pl.scan_parquet(all_processed_files) 
+        
+        else:
+            df, feature_cols = apply_batch_features(df, feature_config, std_flag)
+            feature_cols = [col for col in feature_cols if df[col].dtype != pl.Datetime]
+
+        #Drop mid price as feature
+        # feature_cols = [col for col in feature_cols if col == 'mid']
+
         feature_length = len(feature_cols)+int(inventory_feature_flag) + 4*int(active_quotes_flag)
         print(f"feature columns: {feature_cols}")
         #Get agent from the config
         agent = get_agent(config,feature_length)
-        
         #Get simulator
         sim = MarketSimulator(
             book=df,
@@ -91,7 +151,8 @@ def run_simulation(config: dict):
             initial_cash=initial_cash,
             cost_in_bps=cost_in_bps,
             fixed_cost=fixed_cost,
-            simulator_mode=simulator_mode
+            simulator_mode=simulator_mode,
+            eval_log_flag = eval_log_flag
         )
         
         sim.cash = initial_cash
@@ -129,8 +190,9 @@ def run_simulation(config: dict):
             # Save evaluation log
             run_start = interval["start"]
             run_end   = interval["end"]
-            print(run_start)
-            sim.save_eval_log(run_start, run_end)
+       
+            if eval_log_flag:
+                sim.save_eval_log(run_start, run_end)
 
 
             print(f"Simulation complete for interval {start_str} → {end_str}")
@@ -139,6 +201,21 @@ def run_simulation(config: dict):
             print(f"Final Cash      : {sim.cash}")
             print(f"Final PnL       : {sim.realized_pnl}")
 
+    now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    print('Sim ended at:', now)  
+
+
+# --- thread params ---
+def _configure_torch_threads_cpu():
+    import os, torch
+    n = int(os.getenv("OMP_NUM_THREADS", "6"))
+    torch.set_num_threads(n)
+    try:
+        torch.set_num_interop_threads(max(1, n // 2))
+    except AttributeError:
+        pass
+    # optional: print
+    print(f"[Torch CPU] threads={torch.get_num_threads()} interop=~{max(1, n//2)}")
 
 # ---------- Entrypoint ----------
 

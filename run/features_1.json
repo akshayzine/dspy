@@ -1,0 +1,181 @@
+{
+    "midprice": {
+        "cols": [
+            "bids[0].price",
+            "asks[0].price"
+        ],
+        "scaling_mean":0,
+        "scaling_std":10
+    },
+    "spread": {
+        "cols": [
+            "asks[0].price",
+            "bids[0].price"
+        ],
+        "scaling_mean":1,
+        "scaling_std":10
+    },
+   
+    "book_imbalance": {
+        "levels": 5,
+        "depth": 5,
+        "scaling_mean":11,
+        "scaling_std":12
+    },
+    "ret_time": 
+    [
+        {
+            "delta": 50,
+            "base_col": "mid",
+            "scaling_mean":13,
+            "scaling_std":14
+        },
+        {
+            "delta": 200,
+            "base_col": "cvwap",
+            "levels": 3,
+            "depth": 5,
+            "scaling_mean":15,
+            "scaling_std":16
+        },
+        {
+            "delta": 500,
+            "base_col": "cvwap",
+            "levels": 3,
+            "depth": 5,
+            "scaling_mean":17,
+            "scaling_std":18
+        },
+        {
+            "delta": 700,
+            "base_col": "vwap",
+            "levels": 3,
+            "depth": 5,
+            "scaling_mean":19,
+            "scaling_std":12
+        },
+        {
+            "delta": 1000,
+            "base_col": "vwap",
+            "levels": 3,
+            "depth": 5,
+            "scaling_mean":21,
+            "scaling_std":22
+        }
+    ],
+    "realized_vol_time": 
+    [
+        {
+            "window": 80,
+            "base_col": "vwap",
+            "levels": 3,
+            "depth": 5,
+            "scaling_mean":23,
+            "scaling_std":24
+        },
+        {
+            "window": 100,
+            "base_col": "mid",
+            "scaling_mean":25,
+            "scaling_std":26
+        },
+        {
+            "window": 150,
+            "base_col": "mid",
+            "scaling_mean":27,
+            "scaling_std":28
+        },
+        {
+            "window": 350,
+            "base_col": "vwap",
+            "levels": 3,
+            "depth": 5,
+            "scaling_mean":29,
+            "scaling_std":30
+        },
+        {
+            "window": 500,
+            "base_col": "mid",
+            "scaling_mean":31,
+            "scaling_std":32
+        },
+        {
+            "window": 700,
+            "base_col": "mid",
+            "scaling_mean":33,
+            "scaling_std":34
+        },
+        {
+            "window": 1000,
+            "base_col": "mid",
+            "scaling_mean":35,
+            "scaling_std":36
+        },
+        {
+            "window": 4000,
+            "base_col": "mid",
+            "scaling_mean":37,
+            "scaling_std":38
+        }
+    ],
+    "realized_vol_tick": 
+    [
+        {
+            "ticks": 50,
+            "base_col": "mid",
+            "levels": 1,
+            "depth": 5,
+            "scaling_mean":39,
+            "scaling_std":40
+        },
+        {
+            "ticks": 200,
+            "base_col": "mid",
+            "levels": 1,
+            "depth": 5,
+            "scaling_mean":41,
+            "scaling_std":42
+        }
+    ],
+    "zscore_time":[
+        {
+            "window": 150,
+            "base_col": "mid",
+            "scaling_mean":43,
+            "scaling_std":44
+        },
+        {
+            "window": 700,
+            "base_col": "vwap",
+            "levels": 3,
+            "depth": 5,
+            "scaling_mean":45,
+            "scaling_std":46
+        }
+    ],
+    
+    "avg_tick": 
+    [    
+        {
+        "ticks": 200,
+        "base_col": "spread",
+        "levels": 1,
+        "depth": 5,
+        "scaling_mean":47,
+        "scaling_std":48
+        }
+    ],
+    "std_tick": 
+    [    
+        {
+        "ticks": 100,
+        "base_col": "spread",
+        "levels": 1,
+        "depth": 5,
+        "scaling_mean":49,
+        "scaling_std":50
+        }   
+    ],
+    "inventory": {},
+    "active_quotes": {}
+}

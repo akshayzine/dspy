@@ -1,4 +1,6 @@
 class SimEnv:
+    __slots__ = ("sim", "agent")  # tiny micro-opt; optional
+
     def __init__(self, sim):
         """
         Wraps the MarketSimulator instance to create an RL-compatible interface.
@@ -9,9 +11,9 @@ class SimEnv:
         """
         self.sim = sim
         self.agent = sim.agent      # Convenience access to agent (not required but helpful)
-        self.book = sim.book        # Expose LOB for inspection if needed
 
 
+# ---------- Episode control ----------
     def reset_state(self):
         """
         Reset simulator to beginning of episode.
@@ -31,38 +33,41 @@ class SimEnv:
         """
         return self.sim.is_done()
 
-    def get_state_vector(self):
+ # ---------- State access ----------
+    def get_state_vector(self,idx: int):
         """
         Returns the agent’s current state vector (features + inventory).
 
         Returns:
             list[float]: Flat feature vector at current time step.
         """
-        return self.sim.get_state_vector()
+        return self.sim.get_state_vector(idx)
     
-    def total_pnl(self,mid: float):
-        """
-        Returns the agent’s current state vector (features + inventory).
+    # Fast LOB helpers (avoid touching Polars; no dicts)
+    def best_bid(self, idx: int) -> float:
+        return self.sim._best_bid[idx]
 
-        Returns:
-            list[float]: Flat feature vector at current time step.
-        """
-        return self.sim.total_pnl(mid)
+    def best_ask(self, idx: int) -> float:
+        return self.sim._best_ask[idx]
 
-    def inject_quotes(self, quotes: dict):
-        """
-        Push quotes into the simulator for training mode. These quotes
-        will be consumed by the next call to sim.step().
+    def mid(self, idx: int) -> float:
+        return (self.sim._best_bid[idx] + self.sim._best_ask[idx])*0.5
 
-        Args:
-            quotes (dict): Must include:
-                - "bid_px": Bid price
-                - "bid_qty": Bid quantity
-                - "ask_px": Ask price
-                - "ask_qty": Ask quantity
+    def total_pnl(self, mid: float) -> float:
+        return float(self.sim.total_pnl(mid))
+
+    def square_off(self, idx: int):
+        # index-based square-off (no Polars row)
+        return self.sim.square_off(idx)
+    
+
+
+    def inject_quotes(self, bid_px: float, bid_qty: float, ask_px: float, ask_qty: float):
         """
-        self.sim.pending_quotes["bid"] = (quotes["bid_px"], quotes["bid_qty"])
-        self.sim.pending_quotes["ask"] = (quotes["ask_px"], quotes["ask_qty"])
+        Zero-allocation injector; prefer this in the trainer.
+        """
+        self.sim.pending_quotes["bid"] = (bid_px, bid_qty)
+        self.sim.pending_quotes["ask"] = (ask_px, ask_qty)
 
     def step_with_injected_quotes(self):
         """
@@ -99,9 +104,52 @@ class SimEnv:
         return self.sim.cash
     
     @property
+    def max_drawdown(self):
+        """
+        Returns:
+            float: Current cash available after trade settlement.
+        """
+        return self.sim.max_drawdown
+
+    @property
+    def tpnl(self):
+        """
+        Returns:
+            float: Current cash available after trade settlement.
+        """
+        return self.sim.tpnl
+    
+    @property
+    def drawdown(self):
+        """
+        Returns:
+            float: Current cash available after trade settlement.
+        """
+        return self.sim.drawdown
+
+    @property
+    def total_cost(self):
+        """
+        Returns:
+            float: Current cash available after trade settlement.
+        """
+        return self.sim.total_cost
+    
+    @property
     def ptr(self):
         return self.sim.ptr
     
     @property
+    def n_steps(self) -> int:
+        # number of ticks available
+        return int(self.sim._n)
+    
+    @property
     def trade_count(self):
         return self.sim.trade_count
+    @property
+    def zero_reward_count(self):
+        return self.sim.zero_reward_count
+    @property
+    def state_dim(self):
+        return len(self.sim._state_buf)
