@@ -3,8 +3,8 @@ class SymmetricL2Agent:
     def __init__(
         self,
         tick_size: float,
-        min_order_size: float = 0.001,
-        max_inventory: float = 5.0,
+        min_order_size: float = 0.00001,
+        max_inventory: float = 0.0001,
         base_quote_size:  Optional[float] = None,
         
     ):
@@ -26,18 +26,19 @@ class SymmetricL2Agent:
         self.max_inventory = max_inventory
         self.inventory = 0  # Will be set by the simulator
 
-    def get_quotes_eval(self, state, lob_state):
+    def get_quotes_eval(self, state, best_ask,best_bid):
         """
         Generate symmetric bid/ask quotes based on LOB and inventory.
 
         Args:
             state: Feature vector (not used).
-            lob_state: [best_ask, best_bid]
+            best_ask 
+            best_bid
 
         Returns:
             dict: Quotes {"bid_px", "bid_qty", "ask_px", "ask_qty"}
         """
-        best_ask, best_bid = lob_state
+        
         bid_px = best_bid - self.tick_size
         ask_px = best_ask + self.tick_size
 

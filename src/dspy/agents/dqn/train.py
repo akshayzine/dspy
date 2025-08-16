@@ -10,28 +10,8 @@ from collections import deque
 import numpy as np
 from dspy.agents.dqn.model import QNetwork
 from dspy.agents.dqn.agent import DQNAgent
+from dspy.agents.dqn.replay_buffer import make_replay_buffer
 
-
-class ReplayBuffer:
-    def __init__(self, max_size=100_000):
-        # Fixed-size buffer to store experience tuples
-        self.buffer = deque(maxlen=max_size)
-
-    def push(self, s, a, r, s_, done):
-        # Add a single transition to the buffer
-        self.buffer.append((s, a, r, s_, done))
-
-    def sample(self, batch_size):
-        # Sample a random batch of transitions
-        batch = random.sample(self.buffer, batch_size)
-        s, a, r, s_, d = zip(*batch)
-        return (
-            torch.tensor(s, dtype=torch.float32),
-            torch.tensor(a, dtype=torch.long),
-            torch.tensor(r, dtype=torch.float32),
-            torch.tensor(s_, dtype=torch.float32),
-            torch.tensor(d, dtype=torch.float32)
-        )
 
 
 def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict ):
@@ -43,19 +23,23 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
         env_fn (callable): Function that returns an initialized SimEnv object.
     """
 
-    # Create environment and access the agent
+    # === Environment / agent / device ===
     env = env_fn()
     agent = env.agent
-    device = train_config["device"]
+    device = torch.device(run_config["device"])
+    use_cuda = (device.type == "cuda")
 
     # Get the model from the agent and move it to the selected device
-    model = agent.model.to(device)
+
+    
+    model = agent.model.float().to(device)
 
     # Create target network and initialize it with the same weights as model
     input_dim = model.net[0].in_features
     output_dim = model.net[-1].out_features
-    target_model = type(model)(input_dim=input_dim, output_dim=output_dim).to(device)
+    target_model = type(model)(input_dim=input_dim, output_dim=output_dim).float().to(device)
     target_model.load_state_dict(model.state_dict())
+    target_model.eval()
 
 
     # Load pretrained model weights if a path is provided
@@ -64,24 +48,38 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
         target_model.load_state_dict(model.state_dict())
 
     # Optimizer setup
-    optimizer = torch.optim.Adam(model.parameters(), lr=train_config["lr"])
+    optimizer = torch.optim.Adam(model.parameters(), lr=train_config["lr"],weight_decay=train_config.get("weight_decay", 0.0))
 
     # Replay buffer for experience replay
-    buffer = ReplayBuffer(train_config["buffer_size"])
-
+    # buffer = ReplayBuffer(train_config["buffer_size"], pin_memory=use_cuda)
+    
+    replay = make_replay_buffer(device,
+                            state_dim=env.state_dim,
+                            capacity=train_config["replay_capacity"],
+                            use_fp16_states_on_cuda=train_config.get("replay_fp16_states", False))
+    
     # Discount factor for Bellman equation
     gamma = train_config["gamma"]
 
     # Epsilon-greedy exploration parameters
-    epsilon = train_config["epsilon_start"]
-    epsilon_end = train_config["epsilon_end"]
-    epsilon_decay = train_config["epsilon_decay"]
-    agent.epsilon = epsilon
+
+    # hparams once
+    epsilon_start  = float(train_config["epsilon_start"])
+    epsilon_end    = float(train_config["epsilon_end"])
+    epsilon_warmup = int(train_config.get("epsilon_warmup_ticks", 0))
+    steps_per_episode = int(env.n_steps)                # must be constant
+    num_episodes = int(train_config["num_episodes"])
+    epsi = epsilon_start
+    agent.epsilon = epsi
 
     # Other hyperparameters
     sync_interval = train_config["sync_interval"]
     batch_size = train_config["batch_size"]
     max_grad_norm = train_config.get("max_grad_norm", None)
+    train_freq = train_config["train_freq"]
+    min_replay = int(train_config.get("min_replay", 50_000))
+    use_huber  = bool(train_config.get("use_huber", True))
+    double_dqn = bool(train_config.get("double_dqn", True))
 
     # Base directory for saving logs and models
     # Create a single timestamped folder only once
@@ -89,29 +87,32 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
     log_dir = Path(__file__).parent.parent.parent.parent.parent / "logs/train_logs/dqn" / timestamp_f
     log_dir.mkdir(parents=True, exist_ok=True)
     episode_logging = train_config.get("episode_logging", True)
-    step_logging = train_config.get("step_logging", True)
-
-    # Define filename once
+    step_logging = train_config.get("step_logging", False)
     log_file = "training_logs.csv"
-    # Main training loop
+
+
+     # === Train ===
+    global_step = 0  # Track total steps across all episodes
     for episode in range(train_config["num_episodes"]):
         env.reset_state()
         total_loss = 0.0
         step_count = 0
         reward_sum = 0.0
+        abs_reward_sum = 0.0
         prev_state = None   
         prev_action = None
-
-        while not env.is_done():
-            
+        done = env.is_done()
+        while not done :
+            # print(global_step,"==")
             # === Get current environment state ===
-            state = env.get_state_vector()
+            i = env.ptr  # Current index in the LOB data
+            state = env.get_state_vector(i)
             done = env.is_done()
             # print(f"Episode: {episode}, Step: {env.ptr}, Done: {done}, Data Length: {len(env.book)}")
 
             # Get basic LOB snapshot (best ask and best bid)
-            lob_row = env.book[env.ptr]
-            lob_state = [lob_row["asks[0].price"].item(), lob_row["bids[0].price"].item()]
+            best_ask = float(env.best_ask(i))
+            best_bid = float(env.best_bid(i))
 
             # Sync agent inventory with environment
             agent.inventory = env.inventory
@@ -121,26 +122,31 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
             agent.set_action_idx(action)
         
             # === Set quotes and simulate one environment step ===
-            quotes = agent.get_quotes(state, lob_state)
-            env.inject_quotes({
-                    "bid_px": quotes["bid_px"],
-                    "bid_qty": quotes["bid_qty"],
-                    "ask_px": quotes["ask_px"],
-                    "ask_qty": quotes["ask_qty"],
-                })
-
+            quotes = agent.get_quotes(state, best_ask, best_bid)
+            env.inject_quotes(
+                    quotes["bid_px"],
+                    quotes["bid_qty"],
+                    quotes["ask_px"],
+                    quotes["ask_qty"],
+                )
             env.step_with_injected_quotes()
 
-            done_check = env.is_done() #for end of episode check
+            # done_check = env.is_done() #for end of episode check
             
             # === Store transition in replay buffer ===
-            if not done_check:
-                next_state = env.get_state_vector()
-        
+            # if not done_check:
+            #     next_state = env.get_state_vector(i)
+            if done:
+                last_idx = max(env.ptr - 1, 0)
+                if env.inventory != 0:
+                    env.square_off(last_idx)
+
             reward = env.reward
             reward_sum += reward
+            abs_reward_sum += abs(reward)
+
             if prev_state is not None and prev_action is not None:
-                buffer.push(prev_state, prev_action, reward, state, done)
+                replay.add(prev_state, int(prev_action), np.float32(reward), state, 1 if done else 0)
             
             # === Store the last transition ===
             prev_state = state
@@ -148,6 +154,7 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
            
             # === Log step data if enabled ===
             if step_logging:
+                mid = (best_ask + best_bid)*0.5
                 step_data = {
                     "episode": episode,
                     "step": env.ptr,
@@ -159,10 +166,10 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                     "inventory": env.inventory,
                     "cash": env.cash,
                     "reward": reward,
-                    "mid": lob_row["mid"].item(),
-                    "cumulative_pnl": env.total_pnl(mid=lob_row["mid"].item()),
+                    "mid": mid,
+                    "cumulative_pnl": env.total_pnl(mid),
                     "num_trades": env.trade_count,
-                    "done": done
+                    "done": int(done)
                 }
                 # Write to CSV log file
                 step_filename = f"step_logs_episode_{episode}.csv"
@@ -170,34 +177,47 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                     log_dir=str(log_dir),
                     filename=step_filename,
                     log_data=step_data)  
-
-
+            
+            
+            
+            step_count += 1
+            global_step += 1
             # === Train model if enough samples in buffer ===
-            if len(buffer.buffer) >= batch_size:
-                s, a, r, s_, d = buffer.sample(batch_size)
+            if (len(replay) >= max(batch_size, min_replay)) and (global_step % train_freq == 0):
+                
+                pin = use_cuda
+                
+                s, a, r, s_, d = replay.sample(batch_size)
 
-                # Move to device
-                s = s.to(device)
-                a = a.to(device).unsqueeze(1)  # Shape: [B, 1]
-                r = r.to(device)
-                s_ = s_.to(device)
-                d = d.to(device)
+
+                 # Move to device with async H2D if pinned
+                s  = s.to(device, dtype=torch.float32, non_blocking=pin)
+                a  = a.to(device, non_blocking=pin).unsqueeze(1)
+                r  = r.to(device, non_blocking=pin)
+                s_ = s_.to(device, dtype=torch.float32, non_blocking=pin)
+                d  = d.to(device, non_blocking=pin)
 
                 # === Q(s, a) prediction from online network ===
-                q_vals = model(s)  # Shape: [B, num_actions]
-                q_val = q_vals.gather(1, a).squeeze()  # Get Q-values of taken actions
+
+                q_val = model(s).gather(1, a).squeeze()  # Get Q-values of taken actions
 
                 # === Compute Bellman target using target network ===
                 with torch.no_grad():
-                    next_q_vals = target_model(s_).max(1)[0]  # Max Q-value at next state
-                    target = r + gamma * next_q_vals * (1 - d)  # Bellman equation
+                    if double_dqn:
+                        a_star = model(s_).argmax(dim=1, keepdim=True)                 # choose action from online network
+                        next_q = target_model(s_).gather(1, a_star).squeeze(1)         # get q value from offline network using chosen action
+                    else:
+                        next_q = target_model(s_).max(dim=1).values                    # Max Q-value at next state
+                    
+                    target = r + gamma * next_q * (1.0 - d)
 
                 # === Compute loss and backpropagate ===
-                loss = F.mse_loss(q_val, target)
+                 # --- Loss: Huber (SmoothL1) vs MSE ---
+                loss = F.smooth_l1_loss(q_val, target) if use_huber else F.mse_loss(q_val, target)
                 total_loss += loss.item()
-                step_count += 1
+                
 
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 loss.backward()
 
                 # Optional: gradient clipping
@@ -205,33 +225,52 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
 
                 optimizer.step()
+                # === Periodically sync target network with online network ===
+                if global_step % sync_interval == 0:
+                    target_model.load_state_dict(model.state_dict())
 
-        # === Decay epsilon after every episode ===
-        epsilon = max(epsilon_end, epsilon * epsilon_decay)
-        agent.epsilon = epsilon
+            # === Epsilon update ===
+            epsi =epsilon_linear_by_global_tick(
+                    episode=episode,
+                    env_ptr=i,
+                    steps_per_episode=steps_per_episode,
+                    num_episodes=num_episodes,
+                    min_replay=min_replay,
+                    eps_start=epsilon_start,
+                    eps_end=epsilon_end,
+                    eps_warmup_ticks=epsilon_warmup,
+                )
+            agent.epsilon = epsi
 
-        # === Periodically sync target network with online network ===
-        if episode % sync_interval == 0:
-            target_model.load_state_dict(model.state_dict())
+        
 
         # === Logging ===
         avg_loss = total_loss / max(step_count, 1)
         avg_reward = reward_sum / step_count if step_count > 0 else 0
-        print(f"[Episode {episode}] Inventory: {env.inventory:.2f}, Cash: {env.cash:.2f}, Avg Loss: {avg_loss:.6f}, Epsilon: {epsilon:.4f}")
+        avg_abs_reward = abs_reward_sum / step_count if step_count > 0 else 0
+        print(f"[Episode {episode}] Inventory: {env.inventory:.2f}, Cash: {env.cash:.2f}, Avg Loss: {avg_loss:.6f}, Epsilon: {epsi:.4f}")
 
         if episode_logging:
             # Log data dictionary (after episode finishes)
+            last_idx = max(env.ptr - 1, 0)
+            last_mid = (env.best_ask(last_idx) + env.best_bid(last_idx))*0.5
             log_data = {
                 "episode": episode,
                 "avg_loss": avg_loss,
                 "final_inventory": env.inventory,
                 "final_cash": env.cash,
-                "realized_pnl": env.total_pnl(mid=env.book[env.ptr - 1]["mid"].item()),
+                "total_cost": env.total_cost,
+                "realized_pnl": env.total_pnl(last_mid),
+                "drawdown":env.drawdown,
+                "max_drawdown":env.max_drawdown,
                 "num_steps": step_count,
                 "num_trades": env.trade_count,
+                "zero_reward_count":env.zero_reward_count,
                 "reward_sum": reward_sum,
+                "abs_reward_sum": reward_sum,
                 "avg_reward": avg_reward,
-                "epsilon": epsilon
+                "avg_abs_reward": avg_abs_reward,
+                "epsilon": epsi
             }
             
             # Log it to a file like: src/dspy/agents/dqn/saved/logs_2025-10-06.csv
@@ -245,7 +284,7 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
 
     # === Save final model if path is specified ===
     # if train_config.get("save_path"):  # still use this as a toggle
-    save_dir = Path(__file__).parent.parent / "dqn/saved/"/ timestamp_f
+    save_dir = Path(__file__).parent.parent / "dqn"/"saved/"/ timestamp_f
     save_dir.mkdir(parents=True, exist_ok=True)
     
     #Save is src/agents/dqn/saved/ folder with timestamp
@@ -314,3 +353,38 @@ def csv_writer(log_dir: str, filename: str, log_data: dict):
             writer.writeheader()
 
         writer.writerow(log_data)
+
+def epsilon_linear_by_global_tick(
+    episode: int,
+    env_ptr: int,
+    steps_per_episode: int,
+    num_episodes: int,
+    min_replay: int,
+    eps_start: float,
+    eps_end: float,
+    eps_warmup_ticks: int = 0,
+) -> float:
+    """
+    Smooth ε schedule based on *global ticks* assuming constant episode length.
+
+    ε = eps_start + (eps_end - eps_start) * progress
+    where progress uses total_ticks = episode*steps_per_episode + env_ptr
+
+    Args:
+        episode:          current episode index (0-based)
+        env_ptr:          current tick pointer within the episode (0..steps_per_episode-1)
+        steps_per_episode:env.n_steps (must be constant across episodes)
+        num_episodes:     planned number of training episodes
+        eps_start:        starting epsilon
+        eps_end:          ending epsilon (floor)
+        eps_warmup_ticks: keep ε fixed at eps_start for this many initial ticks (optional)
+    """
+    total_ticks = episode * steps_per_episode + env_ptr
+    total_planned = steps_per_episode * num_episodes
+    if total_ticks < min_replay:
+        return eps_start
+    num = max(0, total_ticks - eps_warmup_ticks)
+    den = max(1, total_planned - eps_warmup_ticks)
+    prog = min(1.0, num / den)
+
+    return float(eps_start + (eps_end - eps_start) * prog)

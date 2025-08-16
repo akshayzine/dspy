@@ -25,6 +25,7 @@ def get_agent(config: dict, feature_length: int = None) -> object:
             tick_size=config["tick_size"],
             min_order_size=config["min_order_size"],
             max_inventory=config["max_inventory"],
+            device=config.get("device", "cpu"),
             
         )
         return agent

@@ -23,7 +23,8 @@ from dspy.features.book_features import (
     add_avg_time,
     add_std_time,
     add_avg_tick,
-    add_std_tick
+    add_std_tick,
+    add_wap_mid_ret
 )
 
 # FEATURE_REGISTRY maps each feature name to:
@@ -110,6 +111,10 @@ FEATURE_REGISTRY = {
     "std_tick": {
         "type": "batch",
         "func": add_std_tick,
+    },
+     "wap_mid_ret": {
+        "type": "batch",
+        "func": add_wap_mid_ret
     },
     "inventory": {
         "type": "external",
