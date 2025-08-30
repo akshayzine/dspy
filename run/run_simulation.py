@@ -12,7 +12,7 @@ sys.path.insert(0, str(project_root / "src"))
 
 from dspy.hdb import get_dataset
 from dspy.sim.market_simulator import MarketSimulator
-from dspy.utils import to_ns, ts_to_str
+from dspy.utils import to_ns, ts_to_str, get_torch_device
 from dspy.features.feature_utils import apply_batch_features, extract_features , flatten_features
 from dspy.agents.agent_utils import get_agent
 
@@ -33,7 +33,7 @@ def run_simulation(config: dict):
     product          = config["product"]
     depth            = config["depth"]
     latency_ns       = config["latency_micros"] * 1_000
-    inv_penalty      = config["inventory_penalty"]
+    inv_penalty      = config["inventory_penalty"]/1e9  # Scale penalty to be per second
     initial_cash     = config["initial_cash"]
     agent_config     = config["agent"]
     intervals        = config["intervals"]
@@ -48,11 +48,11 @@ def run_simulation(config: dict):
     std_flag         = config["standard_scaling_feat"]
     comp_system        = config["comp_system"]
 
-    t_device = torch.device(config["device"])
-
-    # Cap PyTorch threads when on CPU
-    if t_device.type == "cpu":
-        _configure_torch_threads_cpu()
+    t_device = get_torch_device(config["device"])
+    print("Using device:", t_device)
+    # # Cap PyTorch threads when on CPU
+    # if t_device.type == "cpu":
+    #     _configure_torch_threads_cpu()
 
     loader = get_dataset(dataset_name)
     all_books, all_ts = [], []
@@ -62,6 +62,9 @@ def run_simulation(config: dict):
     feature_config = load_config(feature_path)
     inventory_feature_flag = "inventory" in feature_config.keys()
     active_quotes_flag = "active_quotes" in feature_config.keys()
+    pending_quotes_flag = "pending_quotes" in feature_config.keys()
+    active_age_flag = 'active_order_age' in feature_config.keys()
+    pending_age_flag = 'active_order_age' in feature_config.keys()
     
     now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     print('Sim started at:', now)
@@ -131,17 +134,24 @@ def run_simulation(config: dict):
         #Drop mid price as feature
         # feature_cols = [col for col in feature_cols if col == 'mid']
 
-        feature_length = len(feature_cols)+int(inventory_feature_flag) + 4*int(active_quotes_flag)
-        print(f"feature columns: {feature_cols}")
+        feature_length = (len(feature_cols)
+                          + (1 if inventory_feature_flag else 0) + (4 if active_quotes_flag else 0) +(4 if pending_quotes_flag else 0)
+                          +(2 if active_age_flag else 0) + (2 if pending_age_flag else 0) 
+                          + (2 if active_age_flag or active_quotes_flag else 0) + (2 if pending_age_flag or pending_quotes_flag else 0 ))
+        print(f"Feature length: {feature_length}")  
+        # print(f"feature columns: {feature_cols}")
         #Get agent from the config
         agent = get_agent(config,feature_length)
         #Get simulator
         sim = MarketSimulator(
             book=df,
             feature_config=feature_config,
+            feature_columns=feature_cols,
             inventory_feature_flag = inventory_feature_flag,
             active_quotes_flag=active_quotes_flag,
-            feature_columns=feature_cols,
+            pending_quotes_flag=pending_quotes_flag,
+            active_age_flag = active_age_flag,
+            pending_age_flag = pending_age_flag,
             agent=agent,
             latency_ns=latency_ns,
             inventory_penalty=inv_penalty,
@@ -180,6 +190,7 @@ def run_simulation(config: dict):
         else:
 
             for _ in range(len(df)):
+                sim.pre_step()
                 sim.step()
 
             

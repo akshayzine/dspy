@@ -3,7 +3,8 @@
   "weight_decay": 1e-5,
   "min_replay": 50000,  
   "use_huber": true,
-  "double_dqn": true, 
+  "double_dqn": true,
+  "n_reward_step": 1, 
   "gamma": 0.99,
   "epsilon_start": 1.0,
   "epsilon_end": 0.05,
@@ -12,10 +13,11 @@
   "batch_size": 512,
   "sync_interval": 5000,
   "num_episodes": 50,
-  "max_grad_norm": 1.0,
+  "max_grad_norm": 8.0,
   "train_freq": 16,
   "load_path": null,
   "save_path": null,
   "episode_loggging": true,
-  "step_logging": false
+  "step_logging": false,
+  "amp": true
 }

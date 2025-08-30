@@ -1,24 +1,67 @@
-# dqn/model.py
-import torch.nn as nn
+# dspy/agents/dqn/model.py
+import math
 import torch
+import torch.nn as nn
 
 class QNetwork(nn.Module):
-    def __init__(self, input_dim, output_dim = 16):
+    """
+    MLP backbone + (optional) Dueling head.
+    - Dropout is ACTIVE only in train() (disabled in eval(), so targets are stable).
+    - LayerNorm helps with scale drift of LOB features.
+    """
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int =16,
+        hidden_dims=(256, 128),
+        dropout_p: float = 0,
+        use_layernorm: bool = True,
+        dueling: bool = True,
+    ):
         super().__init__()
-        hidden_dim = 128
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(p=0.1),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
-        )
+        self.dueling = dueling
 
-    def forward(self, x):
-        return self.net(x)
+        layers = []
+        d_in = input_dim
+        for h in hidden_dims:
+            layers.append(nn.Linear(d_in, h))
+            if use_layernorm:
+                layers.append(nn.LayerNorm(h))
+            layers.append(nn.ReLU(inplace=True))
+            if dropout_p and dropout_p > 0.0:
+                layers.append(nn.Dropout(p=dropout_p))
+            d_in = h
+        self.backbone = nn.Sequential(*layers)
+
+        if dueling:
+            self.V = nn.Linear(d_in, 1)
+            self.A = nn.Linear(d_in, output_dim)
+            # zero-init heads for a smooth start
+            nn.init.zeros_(self.V.weight); nn.init.zeros_(self.V.bias)
+            nn.init.zeros_(self.A.weight); nn.init.zeros_(self.A.bias)
+        else:
+            self.head = nn.Linear(d_in, output_dim)
+            nn.init.zeros_(self.head.weight); nn.init.zeros_(self.head.bias)
+
+        self.apply(self._init)
+
+    @staticmethod
+    def _init(m):
+        if isinstance(m, nn.Linear):
+            # Kaiming init for ReLU nets
+            nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        z = self.backbone(x)
+        if self.dueling:
+            A = self.A(z)                    # [B, A]
+            V = self.V(z)                    # [B, 1]
+            return V + (A - A.mean(dim=1, keepdim=True))
+        else:
+            return self.head(z)
+
 
 def load_model(path: str, expected_input_dim: int = None, device: str = "cpu") -> QNetwork:
     state_dict = torch.load(path, map_location=device)

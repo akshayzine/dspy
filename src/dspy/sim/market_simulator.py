@@ -16,6 +16,9 @@ class MarketSimulator:
         feature_columns,
         inventory_feature_flag,
         active_quotes_flag,
+        pending_quotes_flag,
+        active_age_flag,
+        pending_age_flag,
         agent,
         latency_ns=200_000,
         inventory_penalty=0.001,
@@ -48,7 +51,10 @@ class MarketSimulator:
         self.feature_config = feature_config
         self.feature_columns = feature_columns
         self.inventory_feature_flag = inventory_feature_flag
-        self.active_quotes_flag = active_quotes_flag 
+        self.active_quotes_flag = active_quotes_flag
+        self.pending_quotes_flag=pending_quotes_flag,
+        self.active_age_flag = active_age_flag,
+        self.pending_age_flag = pending_age_flag, 
         self.agent = agent
         self.latency_ns = latency_ns
         self.inventory_penalty = inventory_penalty
@@ -74,6 +80,9 @@ class MarketSimulator:
         self.zero_reward_count =0
         self.state = None
         self.eval_log_flag = eval_log_flag
+        self.prev_reward_time = None  # Track time of last reward update
+
+        
 
 
         self.active_orders = {"bid": None, "ask": None}
@@ -114,8 +123,12 @@ class MarketSimulator:
 
         # Preallocate state buffer (float32)
         self._base_dim = self._feat_mat.shape[1]
-        self._extra_dim = (4 if self.active_quotes_flag else 0) + (1 if self.inventory_feature_flag else 0)
-        self._state_buf = np.empty((self._base_dim + self._extra_dim,), dtype=np.float32)
+        
+        #precompute scalers/caps (and state dim) once
+        self._recompute_state_caches()
+        self._state_buf = np.empty(self.state_dim, dtype=np.float32)
+        # self._extra_dim = (4 if self.active_quotes_flag else 0) + (4 if self.pending_quotes_flag else 0) + (1 if self.inventory_feature_flag else 0) +(2 if self.active_age_flag else 0) +(2 if self.pending_age_flag else 0)  
+        # self._state_buf = np.empty((self._base_dim + self._extra_dim,), dtype=np.float32)
 
         # Accumulators in float64
         self.cum_reward = np.float64(0.0)
@@ -156,7 +169,7 @@ class MarketSimulator:
     #         penalty = self.inventory_penalty * (self.inventory ** 2)
     #         self.reward = delta_cash - penalty
     #         self.prev_cash = self.cash
-    def update_reward(self, mid):
+    def update_reward(self, mid,time_r=None):
         """
         RL reward function (only in training mode):
         Reward = ΔCash - Inventory Penalty
@@ -166,16 +179,17 @@ class MarketSimulator:
                             = λ * inventory² if |inventory| > 1
         """
     
-        delta_cash = self.cash - self.prev_cash
+        delta_cash = (self.cash - self.prev_cash)/ (mid*self.max_inventory if mid !=0 else 1)  # Normalize by mid to keep reward scale consistent
 
-        # Zero penalty for small inventory
-        if abs(self.inventory) > 2:
-            penalty = self.inventory_penalty * (self.inventory ** 2)
+        if abs(self.inventory) > 0: #2*self.min_order_size:
+            dt = max(0.0,(time_r-self.prev_reward_time if self.prev_reward_time is not None else 0))
+            penalty = self.inventory_penalty * ((self.inventory/self.max_inventory) ** 2)*dt # Scale penalty by time held
         else:
             penalty = 0.0
-
-        self.reward = delta_cash - penalty
+        self.reward = np.clip(delta_cash - penalty, -2.5, 2.5) # Clip reward for stability
         self.prev_cash = self.cash
+        self.prev_reward_time = time_r
+
 
 
     def log_eval_metrics(self, ts, mid, trade_side, trade_price, trade_qty,best_bid=None, best_ask=None):
@@ -251,7 +265,7 @@ class MarketSimulator:
         self.update_position(side, price, qty)
         self.inventory = 0.0
         self.update_pnl_dd(mid)
-        self.update_reward(mid)
+        self.update_reward(mid,ts_now)
 
         if self.eval_log_flag:
             self.log_eval_metrics(
@@ -281,9 +295,10 @@ class MarketSimulator:
         )
         self.t_ready[side] = ts + self.latency_ns
 
-    def step(self):
+    def pre_step(self):
         """
-        Executes one time step (tick) of simulation.
+        Prepares and processes fills for the current tick.
+        Handles order activation, fills, reward update, and state update.
         """
         i = self.ptr
 
@@ -294,15 +309,15 @@ class MarketSimulator:
 
         #Locals for faster process 
         active_orders = self.active_orders 
-        pending_orders = self.pending_orders
+        
         # Promote pending orders to active if delay passed
         for side in ["bid", "ask"]:
-            pending = pending_orders[side]
+            pending = self.pending_orders[side]
             if pending and ts_current >= pending.ts_active:
                 active_orders[side] = pending
                 active_orders[side].activate(ts_current)
                 self.active_orders_count += 1  # Increment active orders count
-                pending_orders[side] = None
+                self.pending_orders[side] = None
 
         # Fill logic
         for side in ["bid", "ask"]:
@@ -333,11 +348,24 @@ class MarketSimulator:
         self.agent.inventory = self.inventory
 
         # Training: update reward
-        self.update_reward(mid)
+        self.update_reward(mid,ts_current)
         if self.reward ==0:
             self.zero_reward_count +=1
 
 
+        
+
+    def step(self):
+        """
+        Executes one time step (tick) of simulation.
+        """
+        i = self.ptr
+
+        best_bid = self._best_bid[i]
+        best_ask = self._best_ask[i]
+        # mid = (best_bid + best_ask)*0.5  # FP32 math here is fine
+        ts_current = self._ts[i] if self._ts is not None else None
+        
         # === Quote logic ===
         if self.simulator_mode == "train":
             # Use quotes already injected by agent via SimEnv
@@ -352,6 +380,9 @@ class MarketSimulator:
             new_bid = (quotes["bid_px"], quotes["bid_qty"])
             new_ask = (quotes["ask_px"], quotes["ask_qty"])
 
+            # self.pending_quotes["bid"] = new_bid
+            # self.pending_quotes["ask"] = new_ask
+
         for side, new_quote in [("bid", new_bid), ("ask", new_ask)]:
             
             if new_quote is None:
@@ -362,7 +393,6 @@ class MarketSimulator:
 
             # Skip if there's a pending order
             if self.pending_orders[side] is not None:
-                self.pending_quotes[side] = new_quote
                 continue
 
             # Check inventory constraints
@@ -372,7 +402,7 @@ class MarketSimulator:
                 continue
 
             # Send new quote if it differs from current active
-            current = active_orders[side]
+            current = self.active_orders[side]
             if current is None or current.quote != new_quote:
                 self.send_order(side, new_quote, ts_current)
                 self.pending_quotes[side] = None
@@ -402,6 +432,7 @@ class MarketSimulator:
         self.max_drawdown = 0.0
         self.total_cost = 0.0
         self.prev_cash = self.initial_cash    # Used for reward calculation
+        self.prev_reward_time = None 
         self.eval_log = []                    # Empty the log used for tracking performance
         
         self.reward = 0.0                     # Reset reward to zero
@@ -416,32 +447,113 @@ class MarketSimulator:
 
 
     def get_state_vector(self, idx: int) -> np.ndarray:
-        # Copy base features (fast memcopy)
-        self._state_buf[:self._base_dim] = self._feat_mat[idx]
-
+        # ===== base features =====
+        buf = self._state_buf
+        buf[:self._base_dim] = self._feat_mat[idx]
         off = self._base_dim
+
+        # ===== time & local scalers (bind cached to locals for speed) =====
+        time_c = float(self._ts[idx]) if self._ts is not None else float(idx * self._late)
+        A_MAX_TICKS = self._A_max
+
+        # orders (local refs)
+        active_bid  = self.active_orders["bid"]
+        active_ask  = self.active_orders["ask"]
+        pending_bid = self.pending_orders["bid"]
+        pending_ask = self.pending_orders["ask"]
+
+        # norms (keep your names, pull from caches)
+        mid      = (self._best_bid[idx] + self._best_ask[idx]) * 0.5
+        denom    = self._denom
+        inv_norm = self._inv_norm
+        late     = self._late
+
+        # ===== ACTIVE quotes block =====
         if self.active_quotes_flag:
-            b = self.active_orders.get("bid")
-            a = self.active_orders.get("ask")
+            # --- active bid ---
+            if active_bid is None:
+                m_b = 0.0; off_b = qty_b = age_b = 0.0
+            else:
+                m_b   = 1.0
+                off_b = (float(active_bid.price) - mid) / denom
+                qty_b = float(active_bid.qty) * inv_norm
+                dt    = max(0.0, time_c - float(active_bid.ts_active))
+                age_b = min(1.0, (dt / late) / A_MAX_TICKS)
 
-            mid = (self._best_bid[idx] + self._best_ask[idx])*0.5  # FP32 ok
-            denom = 5.0 * self.tick_size
+            buf[off + 0] = np.float32(m_b)
+            buf[off + 1] = np.float32(off_b)
+            buf[off + 2] = np.float32(qty_b)
+            if self.active_age_flag:
+                buf[off + 3] = np.float32(age_b); off += 4
+            else:
+                off += 3
 
-            bid_px  = 0.0 if not b else b.price
-            ask_px  = 0.0 if not a else a.price
-            bid_qty = 0.0 if not b else b.qty
-            ask_qty = 0.0 if not a else a.qty
+            # --- active ask ---
+            if active_ask is None:
+                m_a = 0.0; off_a = qty_a = age_a = 0.0
+            else:
+                m_a   = 1.0
+                off_a = (float(active_ask.price) - mid) / denom
+                qty_a = float(active_ask.qty) * inv_norm
+                dt    = max(0.0, time_c - float(active_ask.ts_active))
+                age_a = min(1.0, (dt / late) / A_MAX_TICKS)
 
-            self._state_buf[off + 0] = 0.0 if bid_px == 0.0 else (bid_px - mid) / denom
-            self._state_buf[off + 1] = 0.0 if ask_px == 0.0 else (ask_px - mid) / denom
-            self._state_buf[off + 2] = bid_qty / self.max_inventory
-            self._state_buf[off + 3] = ask_qty / self.max_inventory
-            off += 4
+            buf[off + 0] = np.float32(m_a)
+            buf[off + 1] = np.float32(off_a)
+            buf[off + 2] = np.float32(qty_a)
+            if self.active_age_flag:
+                buf[off + 3] = np.float32(age_a); off += 4
+            else:
+                off += 3
 
+        # ===== PENDING quotes block =====
+        if self.pending_quotes_flag:
+            # --- pending bid ---
+            if pending_bid is None:
+                m_b = 0.0; off_b = qty_b = age_b = 0.0
+            else:
+                m_b   = 1.0
+                off_b = (float(pending_bid.price) - mid) / denom
+                qty_b = float(pending_bid.qty) * inv_norm
+                dt    = max(0.0, time_c - float(pending_bid.ts_sent))
+                age_b = min(1.0, (dt / late))  # normalize by one latency round-trip
+
+            buf[off + 0] = np.float32(m_b)
+            buf[off + 1] = np.float32(off_b)
+            buf[off + 2] = np.float32(qty_b)
+            if self.pending_age_flag:
+                buf[off + 3] = np.float32(age_b); off += 4
+            else:
+                off += 3
+
+            # --- pending ask ---
+            if pending_ask is None:
+                m_a = 0.0; off_a = qty_a = age_a = 0.0
+            else:
+                m_a   = 1.0
+                off_a = (float(pending_ask.price) - mid) / denom
+                qty_a = float(pending_ask.qty) * inv_norm
+                dt    = max(0.0, time_c - float(pending_ask.ts_sent))
+                age_a = min(1.0, (dt / late))
+
+            buf[off + 0] = np.float32(m_a)
+            buf[off + 1] = np.float32(off_a)
+            buf[off + 2] = np.float32(qty_a)
+            if self.pending_age_flag:
+                buf[off + 3] = np.float32(age_a); off += 4
+            else:
+                off += 3
+
+        # ===== inventory =====
         if self.inventory_feature_flag:
-            self._state_buf[off] = np.float32(self.inventory / self.max_inventory)
+            buf[off] = np.float32(self.inventory * inv_norm)
+            off += 1
 
-        return self._state_buf
+        # Optional safety in debug mode:
+        # assert off == self.state_dim, f"state mismatch: off={off}, expected={self.state_dim}"
+
+        return buf
+
 
 
     def is_done(self) -> bool:
@@ -454,3 +566,33 @@ class MarketSimulator:
         return self.ptr >= (self._n-1)  # Simulation ends when pointer exceeds data length
 
 
+    def _recompute_state_caches(self):
+        # Clamp to avoid div-by-zero
+        max_inv  =  float(self.max_inventory)
+        tick     = float(self.tick_size)
+        latency  =  float(self.latency_ns)
+
+        # Cached scalers/caps (names match your code)
+        self._inv_norm  = 1.0 / max_inv
+        self._denom     = 10.0 * tick
+        self._late      = latency
+        self._A_max     = float(getattr(self, "_age_cap_ticks", 20.0))
+        self._act_cap   = self._A_max * self._late   # active-age cap (ns)
+        self._pend_cap  = self._late                 # pending-age cap (ns)
+
+        # Compute state_dim from your flags (base+blocks+inventory)
+        def _per_side_dims(include_age: bool):
+            # mask + offset + qty + (age?)
+            return 3 + (1 if include_age else 0)
+
+        add = 0
+        if self.active_quotes_flag:
+            add += 2 * _per_side_dims(self.active_age_flag)      # bid+ask
+        if self.pending_quotes_flag:
+            add += 2 * _per_side_dims(self.pending_age_flag)     # bid+ask
+        if self.inventory_feature_flag:
+            add += 1
+
+        # self._base_dim must already be set (size of self._feat_mat[idx])
+        self.state_dim = int(self._base_dim + add)
+        print(f"Recomputed state_dim = {self.state_dim} (base={self._base_dim}, add={add})")

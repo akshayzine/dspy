@@ -2,12 +2,14 @@
 from pathlib import Path
 from typing import Callable
 from dspy.agents.dqn.model import load_model
+from dspy.utils import get_torch_device
 
 # ---------- Load agent dynamically ----------
 def get_agent(config: dict, feature_length: int = None) -> object:
     agent_config = config["agent"]
     agent_type = agent_config["type"].lower()
     mode       = agent_config["mode"]
+    t_device = get_torch_device(config["device"])
 
     if agent_type == "dqn":
         from dspy.agents.dqn.agent import DQNAgent
@@ -25,7 +27,7 @@ def get_agent(config: dict, feature_length: int = None) -> object:
             tick_size=config["tick_size"],
             min_order_size=config["min_order_size"],
             max_inventory=config["max_inventory"],
-            device=config.get("device", "cpu"),
+            device=t_device,
             
         )
         return agent

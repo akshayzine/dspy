@@ -1,0 +1,9 @@
+numpy
+polars
+pandas
+matplotlib
+pytz
+# data-source extras (uncomment if you use them)
+tardis-dev
+nest-asyncio
+pybit

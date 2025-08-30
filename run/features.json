@@ -149,5 +149,8 @@
         }
     ],
     "inventory": {},
-    "active_quotes": {}
+    "active_quotes": {},
+    "pending_quotes": {},
+    "active_order_age": {},
+    "pending_order_age":{}
 }
