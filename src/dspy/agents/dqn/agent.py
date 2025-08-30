@@ -9,7 +9,7 @@ class DQNAgent:
         tick_size: float,
         min_order_size: float,
         max_inventory: float,
-        device: str = "cpu",
+        device: torch.device | str = "cpu",
         base_quote_size: float = 0.1,
         epsilon: float = 0.1,
         max_quote_level: int =4,
@@ -40,11 +40,12 @@ class DQNAgent:
         self.max_inventory = max_inventory
         self.base_quote_size = base_quote_size
         self.epsilon = epsilon
-        self.device = device
+        self.device = torch.device(device) if not isinstance(device, torch.device) else device
 
         # Will be updated each step
         self.action_idx = 0
         self.inventory = 0  # Must be injected from simulator before each step
+    
 
     def act(self, state: list[float], explore=True) -> int:
         """

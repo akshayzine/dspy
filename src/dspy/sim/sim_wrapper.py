@@ -79,6 +79,12 @@ class SimEnv:
         """
         self.sim.step()  # Now handles both training and eval internally
 
+    def pre_step(self):
+        """
+        Executes pre step of simulation 
+        """
+        self.sim.pre_step()  # Now handles both training and eval internally
+
     @property
     def reward(self):
         """

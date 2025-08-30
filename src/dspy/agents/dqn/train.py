@@ -1,6 +1,7 @@
 import os
 import json
 import csv
+import copy
 from pathlib import Path
 from datetime import datetime
 import torch
@@ -11,7 +12,10 @@ import numpy as np
 from dspy.agents.dqn.model import QNetwork
 from dspy.agents.dqn.agent import DQNAgent
 from dspy.agents.dqn.replay_buffer import make_replay_buffer
-
+from dspy.agents.dqn.nstep_adder import NStepAdder
+from dspy.utils import get_torch_device
+import sys
+from torch.amp import autocast, GradScaler
 
 
 def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict ):
@@ -26,7 +30,7 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
     # === Environment / agent / device ===
     env = env_fn()
     agent = env.agent
-    device = torch.device(run_config["device"])
+    device = get_torch_device(run_config.get("device"))  # 
     use_cuda = (device.type == "cuda")
 
     # Get the model from the agent and move it to the selected device
@@ -35,11 +39,25 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
     model = agent.model.float().to(device)
 
     # Create target network and initialize it with the same weights as model
-    input_dim = model.net[0].in_features
-    output_dim = model.net[-1].out_features
-    target_model = type(model)(input_dim=input_dim, output_dim=output_dim).float().to(device)
+    # input_dim = model.net[0].in_features
+    # output_dim = model.net[-1].out_features
+    # target_model = type(model)(input_dim=input_dim, output_dim=output_dim).float().to(device)
+    # target_model.load_state_dict(model.state_dict())
+    # target_model.eval()
+
+    input_dim  = getattr(model, "input_dim", env.state_dim)
+    output_dim = getattr(model, "output_dim", agent.num_actions if hasattr(agent, "num_actions") else None)
+    if output_dim is None:
+        output_dim = len(agent.action_set)  # fallback if you keep action_set
+
+    # Make identical target by deep-copying the online net (handles all kwargs)
+    target_model = copy.deepcopy(model).to(device)
     target_model.load_state_dict(model.state_dict())
-    target_model.eval()
+    target_model.eval()                  # turns off Dropout/BN
+    for p in target_model.parameters():
+        p.requires_grad_(False)
+    
+
 
 
     # Load pretrained model weights if a path is provided
@@ -48,7 +66,13 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
         target_model.load_state_dict(model.state_dict())
 
     # Optimizer setup
-    optimizer = torch.optim.Adam(model.parameters(), lr=train_config["lr"],weight_decay=train_config.get("weight_decay", 0.0))
+    
+    optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=train_config["lr"],
+            weight_decay=train_config.get("weight_decay", 0.0),
+            betas=(0.9, 0.999)  ###added
+        )
 
     # Replay buffer for experience replay
     # buffer = ReplayBuffer(train_config["buffer_size"], pin_memory=use_cuda)
@@ -56,10 +80,18 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
     replay = make_replay_buffer(device,
                             state_dim=env.state_dim,
                             capacity=train_config["replay_capacity"],
-                            use_fp16_states_on_cuda=train_config.get("replay_fp16_states", False))
-    
+                            )
+    # === AMP only on CUDA ===
+    use_amp = (device.type == "cuda") and train_config.get("amp", True)
+    scaler  = GradScaler("cuda", enabled=use_amp) if use_amp else None
+
+
+
     # Discount factor for Bellman equation
     gamma = train_config["gamma"]
+    n_reward_step = train_config["n_reward_step"]
+    gamma_n = gamma**(n_reward_step)
+    adder = NStepAdder(n=n_reward_step, gamma=gamma)
 
     # Epsilon-greedy exploration parameters
 
@@ -95,10 +127,12 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
     global_step = 0  # Track total steps across all episodes
     for episode in range(train_config["num_episodes"]):
         env.reset_state()
+        adder.reset_window()
         total_loss = 0.0
         step_count = 0
         reward_sum = 0.0
         abs_reward_sum = 0.0
+        action_counter = np.zeros(output_dim)
         prev_state = None   
         prev_action = None
         done = env.is_done()
@@ -106,6 +140,7 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
             # print(global_step,"==")
             # === Get current environment state ===
             i = env.ptr  # Current index in the LOB data
+            env.pre_step()  # Pre-step 
             state = env.get_state_vector(i)
             done = env.is_done()
             # print(f"Episode: {episode}, Step: {env.ptr}, Done: {done}, Data Length: {len(env.book)}")
@@ -120,6 +155,7 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
             # === Select action using epsilon-greedy policy ===
             action = agent.act(state, explore=True)
             agent.set_action_idx(action)
+            action_counter[action] +=1
         
             # === Set quotes and simulate one environment step ===
             quotes = agent.get_quotes(state, best_ask, best_bid)
@@ -140,13 +176,32 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                 last_idx = max(env.ptr - 1, 0)
                 if env.inventory != 0:
                     env.square_off(last_idx)
+                reward = env.reward
+                reward_sum += reward
+                abs_reward_sum += abs(reward)
+                if prev_state is not None and prev_action is not None:
+                    # replay.add(prev_state, int(prev_action), np.float32(reward), state, 1 if done else 0)
+                    out = adder.push(prev_state.copy(), int(prev_action), reward, state.copy(), bool(done))
+                    if out is not None:
+                        s0, a0, Rn, sN, dN = out
+                        replay.add(s0, a0, Rn, sN, dN)
 
-            reward = env.reward
-            reward_sum += reward
-            abs_reward_sum += abs(reward)
+                #Final Steps        
+                for (s0, a0, Rtail, sTail, dTail) in adder.flush_end_episode():
+                    replay.add(s0, a0, Rtail, sTail, dTail)
+            else:   
+                reward = env.reward
+                reward_sum += reward
+                abs_reward_sum += abs(reward)
 
-            if prev_state is not None and prev_action is not None:
-                replay.add(prev_state, int(prev_action), np.float32(reward), state, 1 if done else 0)
+                if prev_state is not None and prev_action is not None:
+                    # replay.add(prev_state, int(prev_action), np.float32(reward), state, 1 if done else 0)
+                    out = adder.push(prev_state.copy(), int(prev_action), reward, state.copy(), bool(done))
+                    if out is not None:
+                        s0, a0, Rn, sN, dN = out
+                        replay.add(s0, a0, Rn, sN, dN)
+                    
+
             
             # === Store the last transition ===
             prev_state = state
@@ -189,45 +244,73 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                 
                 s, a, r, s_, d = replay.sample(batch_size)
 
+                # If on CUDA, pin the sampled views so non_blocking H2D is actually async
+                if use_cuda:
+                    s, a, r, s_, d = (t.pin_memory() for t in (s, a, r, s_, d))
+
+
 
                  # Move to device with async H2D if pinned
                 s  = s.to(device, dtype=torch.float32, non_blocking=pin)
-                a  = a.to(device, non_blocking=pin).unsqueeze(1)
+                a  = a.to(device, dtype=torch.long, non_blocking=pin).unsqueeze(1)
                 r  = r.to(device, non_blocking=pin)
                 s_ = s_.to(device, dtype=torch.float32, non_blocking=pin)
-                d  = d.to(device, non_blocking=pin)
-
-                # === Q(s, a) prediction from online network ===
-
-                q_val = model(s).gather(1, a).squeeze()  # Get Q-values of taken actions
-
-                # === Compute Bellman target using target network ===
-                with torch.no_grad():
-                    if double_dqn:
-                        a_star = model(s_).argmax(dim=1, keepdim=True)                 # choose action from online network
-                        next_q = target_model(s_).gather(1, a_star).squeeze(1)         # get q value from offline network using chosen action
-                    else:
-                        next_q = target_model(s_).max(dim=1).values                    # Max Q-value at next state
-                    
-                    target = r + gamma * next_q * (1.0 - d)
-
-                # === Compute loss and backpropagate ===
-                 # --- Loss: Huber (SmoothL1) vs MSE ---
-                loss = F.smooth_l1_loss(q_val, target) if use_huber else F.mse_loss(q_val, target)
-                total_loss += loss.item()
-                
+                d  = d.to(device, dtype=torch.float32, non_blocking=pin)
 
                 optimizer.zero_grad(set_to_none=True)
-                loss.backward()
 
-                # Optional: gradient clipping
-                if max_grad_norm:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                # === Forward / loss / backward (AMP on CUDA) ===
+                if use_amp:
+                    with autocast(device_type="cuda", dtype=torch.float16, enabled=True): # RTX 6000 (Turing) → FP16 autocast
+                        q_val = model(s).gather(1, a).squeeze(1)  # Q(s,a)
 
-                optimizer.step()
+                        with torch.no_grad():
+                            if double_dqn:
+                                a_star = model(s_).argmax(dim=1, keepdim=True)
+                                next_q = target_model(s_).gather(1, a_star).squeeze(1)
+                            else:
+                                next_q = target_model(s_).max(dim=1).values
+
+                            target = (r + gamma_n * next_q * (1.0 - d)).float() #Ensure FP32
+
+                        loss = F.smooth_l1_loss(q_val, target) if use_huber else F.mse_loss(q_val, target)
+
+                    scaler.scale(loss).backward()
+                    if max_grad_norm:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+
+                else:
+                    # Plain FP32 path (CPU or CUDA without AMP)
+                    q_val = model(s).gather(1, a).squeeze(1)
+
+                    with torch.no_grad():
+                        if double_dqn:
+                            a_star = model(s_).argmax(dim=1, keepdim=True)
+                            next_q = target_model(s_).gather(1, a_star).squeeze(1)
+                        else:
+                            next_q = target_model(s_).max(dim=1).values
+
+                        target = r + gamma_n * next_q * (1.0 - d)
+
+                    loss = F.smooth_l1_loss(q_val, target) if use_huber else F.mse_loss(q_val, target)
+                    loss.backward()
+                    if max_grad_norm:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                    optimizer.step()
+
+                total_loss += float(loss.item())
+
                 # === Periodically sync target network with online network ===
-                if global_step % sync_interval == 0:
-                    target_model.load_state_dict(model.state_dict())
+                # if global_step % sync_interval == 0:
+                #     target_model.load_state_dict(model.state_dict())
+                # === Soft-sync target network (polyak) ===
+                with torch.no_grad():
+                    tau = 0.002   # (try 0.002–0.005)
+                    for pt, p in zip(target_model.parameters(), model.parameters()):
+                        pt.mul_(1 - tau).add_(tau * p)
 
             # === Epsilon update ===
             epsi =epsilon_linear_by_global_tick(
@@ -248,8 +331,9 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
         avg_loss = total_loss / max(step_count, 1)
         avg_reward = reward_sum / step_count if step_count > 0 else 0
         avg_abs_reward = abs_reward_sum / step_count if step_count > 0 else 0
+        max_action = agent.action_set[np.argmax(action_counter)]
         print(f"[Episode {episode}] Inventory: {env.inventory:.2f}, Cash: {env.cash:.2f}, Avg Loss: {avg_loss:.6f}, Epsilon: {epsi:.4f}")
-
+        print(f"               Reward Sum: {reward_sum:.4f}, Avg Reward: {avg_reward:.4f}, Abs Avg Reward: {avg_abs_reward:.4f}")       
         if episode_logging:
             # Log data dictionary (after episode finishes)
             last_idx = max(env.ptr - 1, 0)
@@ -267,9 +351,11 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                 "num_trades": env.trade_count,
                 "zero_reward_count":env.zero_reward_count,
                 "reward_sum": reward_sum,
-                "abs_reward_sum": reward_sum,
+                "abs_reward_sum": abs_reward_sum,
                 "avg_reward": avg_reward,
                 "avg_abs_reward": avg_abs_reward,
+                "max_action":max_action,
+                "max_action_count":np.max(action_counter),
                 "epsilon": epsi
             }
             

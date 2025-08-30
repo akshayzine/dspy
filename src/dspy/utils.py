@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timedelta,timezone
 import pytz
 import polars as pl
+import torch
 
 def nanoseconds(input: Union[str, datetime]) -> int:
     """
@@ -123,3 +124,12 @@ def add_ts_dt(df: pl.DataFrame, ts_col: str = "ts") -> pl.DataFrame:
     return df.with_columns(
         pl.col(ts_col).cast(pl.Datetime("ns")).alias("ts_dt")
     )
+
+def get_torch_device(pref: str | None = None) -> torch.device:
+    if pref and pref in ("cpu", "cuda", "mps"):
+        return torch.device(pref)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    # if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+    #     return torch.device("mps")
+    return torch.device("cpu")

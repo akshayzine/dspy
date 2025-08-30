@@ -1,0 +1,29 @@
+{
+    "dataset": "tardis",
+    "product": "BTCUSDT",
+    "market": "binance-futures",
+    "depth": 5,
+    "latency_micros": 5000,
+    "max_inventory": 0.001,
+    "inventory_penalty": 0.1,
+    "initial_cash": 100000,
+    "min_order_size": 0.0001,
+    "tick_size": 0.1,
+    "cost_in_bps": 7.5,
+    "fixed_cost": 0,
+    "standard_scaling_feat": true,
+    "eval_log_flag": false,
+    "device": "cpu",
+    "comp_system": "persl",
+    "agent": {
+        "type": "dqn",
+        "mode": "train"
+    },
+    "simulator_mode": "train",
+    "intervals": [
+        {
+            "start": "2025-04-01 00:00:00",
+            "end": "2025-04-01 01:00:30"
+        }
+    ]
+}
