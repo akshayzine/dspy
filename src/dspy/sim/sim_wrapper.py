@@ -60,6 +60,9 @@ class SimEnv:
         # index-based square-off (no Polars row)
         return self.sim.square_off(idx)
     
+    def current_time(self, idx: int) -> float:
+        return self.sim._ts[idx]
+    
 
 
     def inject_quotes(self, bid_px: float, bid_qty: float, ask_px: float, ask_qty: float):

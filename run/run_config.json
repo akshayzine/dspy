@@ -3,18 +3,19 @@
   "product": "BTCUSDT",
   "market": "binance-futures",
   "depth": 5,
-  "latency_micros": 4000,
-  "max_inventory": 0.0001,
-  "inventory_penalty": 0.025,
-  "initial_cash": 100000,
-  "min_order_size": 0.0001,
+  "latency_micros": 10000,
+  "max_inventory": 0.001,
+  "inventory_penalty": 0.04,
+  "initial_cash": 1000,
+  "min_order_size": 0.001,
   "tick_size": 0.10,
-  "cost_in_bps": 5.0,  
+  "cost_in_bps": 0.2,  
   "fixed_cost": 0, 
   "standard_scaling_feat": true,
   "eval_log_flag": false,
   "device": "auto",
   "comp_system":"persl",
+  "label": "ab_mac_dqn_n_step_1",
 
   "agent": {
     "type": "dqn",
@@ -24,8 +25,8 @@
   "simulator_mode": "train",
   "intervals": [
     {
-      "start": "2025-04-01 00:00:00",
-      "end": "2025-04-03 00:01:30"
+      "start": "2025-04-14 12:00:00",
+      "end": "2025-04-15 12:00:00"
     }
   ]
 }

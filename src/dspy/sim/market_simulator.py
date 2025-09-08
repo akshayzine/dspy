@@ -172,11 +172,10 @@ class MarketSimulator:
     def update_reward(self, mid,time_r=None):
         """
         RL reward function (only in training mode):
-        Reward = ΔCash - Inventory Penalty
+        Reward = ΔCash - Inventory Penalty - normalized 
 
-        - ΔCash = realized profit/loss from fills
-        - Inventory Penalty = 0 if |inventory| ≤ 1
-                            = λ * inventory² if |inventory| > 1
+        - ΔCash = realized profit/loss from fills - normalized by mid*max_inventory
+        - Inventory Penalty =  = λ * inventory²*dt  - normalized by max_inventory
         """
     
         delta_cash = (self.cash - self.prev_cash)/ (mid*self.max_inventory if mid !=0 else 1)  # Normalize by mid to keep reward scale consistent

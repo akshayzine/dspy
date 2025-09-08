@@ -75,11 +75,11 @@ class Order:
         if not self.is_active():
             return False  # Can't fill until active
 
-        if self.side == "bid" and self.price >= best_bid:
+        if self.side == "bid" and self.price > best_bid:
             self.filled = True
             return True
 
-        elif self.side == "ask" and self.price <= best_ask:
+        elif self.side == "ask" and self.price < best_ask:
             self.filled = True
             return True
 

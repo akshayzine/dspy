@@ -133,6 +133,7 @@ def run_simulation(config: dict):
 
         #Drop mid price as feature
         # feature_cols = [col for col in feature_cols if col == 'mid']
+        
 
         feature_length = (len(feature_cols)
                           + (1 if inventory_feature_flag else 0) + (4 if active_quotes_flag else 0) +(4 if pending_quotes_flag else 0)
@@ -195,8 +196,9 @@ def run_simulation(config: dict):
 
             
             # Square off open inventory at the final tick
-            last_row = sim.book[sim.ptr - 1]
-            sim.square_off(last_row)
+            # last_row = sim.book[sim.ptr - 1]
+            last_idx = max(sim.ptr - 1, 0)
+            sim.square_off(last_idx)
 
             # Save evaluation log
             run_start = interval["start"]

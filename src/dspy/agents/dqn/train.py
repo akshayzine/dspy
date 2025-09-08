@@ -38,13 +38,6 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
     
     model = agent.model.float().to(device)
 
-    # Create target network and initialize it with the same weights as model
-    # input_dim = model.net[0].in_features
-    # output_dim = model.net[-1].out_features
-    # target_model = type(model)(input_dim=input_dim, output_dim=output_dim).float().to(device)
-    # target_model.load_state_dict(model.state_dict())
-    # target_model.eval()
-
     input_dim  = getattr(model, "input_dim", env.state_dim)
     output_dim = getattr(model, "output_dim", agent.num_actions if hasattr(agent, "num_actions") else None)
     if output_dim is None:
@@ -56,8 +49,6 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
     target_model.eval()                  # turns off Dropout/BN
     for p in target_model.parameters():
         p.requires_grad_(False)
-    
-
 
 
     # Load pretrained model weights if a path is provided
@@ -91,18 +82,28 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
     gamma = train_config["gamma"]
     n_reward_step = train_config["n_reward_step"]
     gamma_n = gamma**(n_reward_step)
-    adder = NStepAdder(n=n_reward_step, gamma=gamma)
-
+    
+    time_discount = train_config.get("time_based_discount", False)
+    
+    if time_discount:
+        half_life = float(train_config.get("gamma_half_life_sec", 3.0))
+        gamma_per_sec = 2.0 ** (-1.0 / half_life)
+        gamma_nano = gamma_per_sec ** 1e-9
+        adder = NStepAdder(n=n_reward_step, gamma=gamma,gamma_nano=gamma_nano)
+    else:
+        adder = NStepAdder(n=n_reward_step, gamma=gamma)
     # Epsilon-greedy exploration parameters
 
     # hparams once
     epsilon_start  = float(train_config["epsilon_start"])
     epsilon_end    = float(train_config["epsilon_end"])
     epsilon_warmup = int(train_config.get("epsilon_warmup_ticks", 0))
+    mdp_step_warmup = int(train_config.get("mdp_step_warmup", 0))
     steps_per_episode = int(env.n_steps)                # must be constant
     num_episodes = int(train_config["num_episodes"])
     epsi = epsilon_start
     agent.epsilon = epsi
+    action_timeout_nanos = float(train_config.get("action_timeout_sec", 0.35))/epsi * 1e9  # scale timeout by current epsilon
 
     # Other hyperparameters
     sync_interval = train_config["sync_interval"]
@@ -116,13 +117,14 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
     # Base directory for saving logs and models
     # Create a single timestamped folder only once
     timestamp_f = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = Path(__file__).parent.parent.parent.parent.parent / "logs/train_logs/dqn" / timestamp_f
+    label = run_config.get("label", "")
+    log_dir = Path(__file__).parent.parent.parent.parent.parent / "logs/train_logs/dqn" / timestamp_f/ label
     log_dir.mkdir(parents=True, exist_ok=True)
     episode_logging = train_config.get("episode_logging", True)
     step_logging = train_config.get("step_logging", False)
     log_file = "training_logs.csv"
 
-
+    mdp_step_count = 0
      # === Train ===
     global_step = 0  # Track total steps across all episodes
     for episode in range(train_config["num_episodes"]):
@@ -130,41 +132,59 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
         adder.reset_window()
         total_loss = 0.0
         step_count = 0
+        Rn = 0.0
+        mdp_reward = 0.0
         reward_sum = 0.0
         abs_reward_sum = 0.0
         action_counter = np.zeros(output_dim)
+
+        prev_action_time = env.current_time(env.ptr)
+        prev_inventory = 0.0
+        prev_mid = 0.0
         prev_state = None   
         prev_action = None
+        prev_time = None
         done = env.is_done()
         while not done :
             # print(global_step,"==")
             # === Get current environment state ===
             i = env.ptr  # Current index in the LOB data
             env.pre_step()  # Pre-step 
+            current_time = env.current_time(i)
             state = env.get_state_vector(i)
             done = env.is_done()
+            action_triggered = False
             # print(f"Episode: {episode}, Step: {env.ptr}, Done: {done}, Data Length: {len(env.book)}")
 
             # Get basic LOB snapshot (best ask and best bid)
             best_ask = float(env.best_ask(i))
             best_bid = float(env.best_bid(i))
-
+            mid = (best_ask + best_bid)*0.5
+            inventory = env.inventory
             # Sync agent inventory with environment
-            agent.inventory = env.inventory
+            agent.inventory = inventory
+            
+            # === Take MDP step if action timeout or significant state change ===
+            action_triggered = ((current_time - prev_action_time >= action_timeout_nanos*epsi) or (env.ptr ==0) or done or
+                (prev_mid != mid) or (prev_inventory != inventory))
+            prev_mid = mid
+            prev_inventory = inventory
+            if action_triggered:
+                # === Select action using epsilon-greedy policy ===
+                action = agent.act(state, explore=True)
+                agent.set_action_idx(action)
+                action_counter[action] +=1
+                # === Set quotes and simulate one environment step ===
+                quotes = agent.get_quotes(state, best_ask, best_bid)
+                env.inject_quotes(
+                        quotes["bid_px"],
+                        quotes["bid_qty"],
+                        quotes["ask_px"],
+                        quotes["ask_qty"],
+                    )
+                mdp_step_count += 1 # Increment MDP step count only when action is taken
 
-            # === Select action using epsilon-greedy policy ===
-            action = agent.act(state, explore=True)
-            agent.set_action_idx(action)
-            action_counter[action] +=1
-        
-            # === Set quotes and simulate one environment step ===
-            quotes = agent.get_quotes(state, best_ask, best_bid)
-            env.inject_quotes(
-                    quotes["bid_px"],
-                    quotes["bid_qty"],
-                    quotes["ask_px"],
-                    quotes["ask_qty"],
-                )
+            
             env.step_with_injected_quotes()
 
             # done_check = env.is_done() #for end of episode check
@@ -177,35 +197,59 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                 if env.inventory != 0:
                     env.square_off(last_idx)
                 reward = env.reward
-                reward_sum += reward
-                abs_reward_sum += abs(reward)
+                
                 if prev_state is not None and prev_action is not None:
                     # replay.add(prev_state, int(prev_action), np.float32(reward), state, 1 if done else 0)
-                    out = adder.push(prev_state.copy(), int(prev_action), reward, state.copy(), bool(done))
-                    if out is not None:
-                        s0, a0, Rn, sN, dN = out
-                        replay.add(s0, a0, Rn, sN, dN)
+                    mdp_reward += reward ##Cumulate reward till action taken
+                    if action_triggered :
+                        out = adder.push(prev_state.copy(), int(prev_action), mdp_reward, state.copy(), bool(done),prev_action_time)
+                        mdp_reward = 0.0
+                        if out is not None:
+                            s0, a0, Rn, sN, dN ,gN = out
+                            if time_discount:
+                                gN *= gamma_nano ** ((current_time - prev_action_time) )
+                                
+                            else:
+                                gN *= gamma
+                            replay.add(s0, a0, Rn, sN, dN, gN)
+                            reward_sum += Rn
+                            abs_reward_sum += abs(Rn)
 
-                #Final Steps        
-                for (s0, a0, Rtail, sTail, dTail) in adder.flush_end_episode():
-                    replay.add(s0, a0, Rtail, sTail, dTail)
+                    #Final Steps        
+                    for (s0, a0, Rtail, sTail, dTail,gTail) in adder.flush_end_episode():
+                        replay.add(s0, a0, Rtail, sTail, dTail,gTail)
+                        reward_sum += Rtail
+                        abs_reward_sum += abs(Rtail)
             else:   
+                
                 reward = env.reward
-                reward_sum += reward
-                abs_reward_sum += abs(reward)
-
+            
                 if prev_state is not None and prev_action is not None:
                     # replay.add(prev_state, int(prev_action), np.float32(reward), state, 1 if done else 0)
-                    out = adder.push(prev_state.copy(), int(prev_action), reward, state.copy(), bool(done))
-                    if out is not None:
-                        s0, a0, Rn, sN, dN = out
-                        replay.add(s0, a0, Rn, sN, dN)
+                    mdp_reward += reward  ##Cumulate reward till action taken
+                    if action_triggered :
+                        out = adder.push(prev_state.copy(), int(prev_action), mdp_reward, state.copy(), bool(done),prev_action_time)
+                        mdp_reward = 0.0
+                        if out is not None:
+                            s0, a0, Rn, sN, dN, gN = out
+                            if time_discount:
+                                gN *= gamma_nano ** ((current_time - prev_action_time) )
+                                
+                            else:
+                                gN *= gamma
+                            replay.add(s0, a0, Rn, sN, dN, gN)
+                            reward_sum += Rn
+                            abs_reward_sum += abs(Rn)
+                            
                     
 
             
             # === Store the last transition ===
-            prev_state = state
-            prev_action = action
+            if action_triggered:
+                prev_state = state
+                prev_action = action
+                prev_action_time = current_time
+            prev_time = current_time
            
             # === Log step data if enabled ===
             if step_logging:
@@ -220,7 +264,7 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                     "ask_qty": quotes["ask_qty"],
                     "inventory": env.inventory,
                     "cash": env.cash,
-                    "reward": reward,
+                    "reward": Rn,
                     "mid": mid,
                     "cumulative_pnl": env.total_pnl(mid),
                     "num_trades": env.trade_count,
@@ -238,15 +282,15 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
             step_count += 1
             global_step += 1
             # === Train model if enough samples in buffer ===
-            if (len(replay) >= max(batch_size, min_replay)) and (global_step % train_freq == 0):
+            if (len(replay) >= max(batch_size, min_replay)) and (mdp_step_count % train_freq == 0):
                 
                 pin = use_cuda
                 
-                s, a, r, s_, d = replay.sample(batch_size)
+                s, a, r, s_, d, g = replay.sample(batch_size)
 
                 # If on CUDA, pin the sampled views so non_blocking H2D is actually async
                 if use_cuda:
-                    s, a, r, s_, d = (t.pin_memory() for t in (s, a, r, s_, d))
+                    s, a, r, s_, d, g = (t.pin_memory() for t in (s, a, r, s_, d, g))
 
 
 
@@ -256,8 +300,23 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                 r  = r.to(device, non_blocking=pin)
                 s_ = s_.to(device, dtype=torch.float32, non_blocking=pin)
                 d  = d.to(device, dtype=torch.float32, non_blocking=pin)
+                g  = g.to(device, dtype=torch.float32, non_blocking=pin)
 
                 optimizer.zero_grad(set_to_none=True)
+
+
+                #                 # dspy/src/dspy/agents/dqn/train.py  (inside the update step)
+                # states, actions, rewards, next_states, dones, gammas = replay.sample(batch_size)
+
+                # q_sa = online_net(states).gather(1, actions.view(-1,1)).squeeze(1)
+                # a_star = online_net(next_states).argmax(dim=1)
+                # q_tgt_next = target_net(next_states).gather(1, a_star.view(-1,1)).squeeze(1)
+
+                # # time-aware n-step target
+                # y = rewards + gammas * q_tgt_next * (1.0 - dones)
+
+                # loss_per = F.smooth_l1_loss(q_sa, y.detach(), reduction="none")
+                # loss = loss_per.mean()
 
                 # === Forward / loss / backward (AMP on CUDA) ===
                 if use_amp:
@@ -271,7 +330,9 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                             else:
                                 next_q = target_model(s_).max(dim=1).values
 
-                            target = (r + gamma_n * next_q * (1.0 - d)).float() #Ensure FP32
+                            # target = (r + gamma_n * next_q * (1.0 - d)).float() #Ensure FP32
+                            
+                            target = (r + g * next_q * (1.0 - d)).float()
 
                         loss = F.smooth_l1_loss(q_val, target) if use_huber else F.mse_loss(q_val, target)
 
@@ -293,7 +354,8 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                         else:
                             next_q = target_model(s_).max(dim=1).values
 
-                        target = r + gamma_n * next_q * (1.0 - d)
+                        # target = r + gamma_n * next_q * (1.0 - d)
+                        target = r + g * next_q * (1.0 - d)
 
                     loss = F.smooth_l1_loss(q_val, target) if use_huber else F.mse_loss(q_val, target)
                     loss.backward()
@@ -308,12 +370,18 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                 #     target_model.load_state_dict(model.state_dict())
                 # === Soft-sync target network (polyak) ===
                 with torch.no_grad():
-                    tau = 0.002   # (try 0.002–0.005)
+                    polyac_tau = 0.002   # (try 0.002–0.005)
+                    # if epsi > 0.25 and epsi <=0.4:
+                    #     polyac_tau = 0.003
                     for pt, p in zip(target_model.parameters(), model.parameters()):
-                        pt.mul_(1 - tau).add_(tau * p)
+                        pt.mul_(1 - polyac_tau).add_(polyac_tau * p)
 
             # === Epsilon update ===
-            epsi =epsilon_linear_by_global_tick(
+            if mdp_step_count < (min_replay + mdp_step_warmup):
+                epsi = epsilon_start
+                epsilon_warmup = episode * steps_per_episode + i
+            else:
+                epsi =epsilon_linear_by_global_tick(
                     episode=episode,
                     env_ptr=i,
                     steps_per_episode=steps_per_episode,
@@ -322,8 +390,11 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                     eps_start=epsilon_start,
                     eps_end=epsilon_end,
                     eps_warmup_ticks=epsilon_warmup,
-                )
+                    )
+                
+            
             agent.epsilon = epsi
+            
 
         
 
@@ -449,6 +520,7 @@ def epsilon_linear_by_global_tick(
     eps_start: float,
     eps_end: float,
     eps_warmup_ticks: int = 0,
+    mdp_step_count: int = 0,
 ) -> float:
     """
     Smooth ε schedule based on *global ticks* assuming constant episode length.
@@ -472,5 +544,7 @@ def epsilon_linear_by_global_tick(
     num = max(0, total_ticks - eps_warmup_ticks)
     den = max(1, total_planned - eps_warmup_ticks)
     prog = min(1.0, num / den)
+    
 
     return float(eps_start + (eps_end - eps_start) * prog)
+

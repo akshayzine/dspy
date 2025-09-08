@@ -18,13 +18,15 @@ class SimpleReplayBuffer:
         self.A  = torch.empty((self.capacity,), dtype=torch.long)                   # [N]
         self.R  = torch.empty((self.capacity,), dtype=torch.float32)                # [N]
         self.D  = torch.empty((self.capacity,), dtype=torch.bool)                   # [N]
+        self.G  = torch.ones((self.capacity,), dtype=torch.float32)                # [N]  gammas for next in n-step
+         # current size and next insert index
         self.size = 0
         self.ptr  = 0
 
     def __len__(self) -> int:
         return self.size
 
-    def add(self, s, a: int, r: float, s2, done) -> None:
+    def add(self, s, a: int, r: float, s2, done, g: float =1) -> None:
         i = self.ptr
         s_t  = torch.as_tensor(s,  dtype=self.S.dtype,  device="cpu").contiguous()
         s2_t = torch.as_tensor(s2, dtype=self.S2.dtype, device="cpu").contiguous()
@@ -33,6 +35,7 @@ class SimpleReplayBuffer:
         self.A[i] = int(a)
         self.R[i] = float(r)
         self.D[i] = bool(float(done) >= 0.5)
+        self.G[i] = float(g)
         self.ptr  = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
@@ -46,13 +49,15 @@ class SimpleReplayBuffer:
         r  = self.R.index_select(0, idx)
         s2 = self.S2.index_select(0, idx)
         d  = self.D.index_select(0, idx).to(torch.float32)
+        g  = self.G.index_select(0, idx)
         if device is not None:
             s  = s.to(device)
             a  = a.to(device)
             r  = r.to(device)
             s2 = s2.to(device)
             d  = d.to(device)
-        return s, a, r, s2, d
+            g  = g.to(device)
+        return s, a, r, s2, d, g
 
 
 # Keep the existing factory name so callers don't change

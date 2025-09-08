@@ -2,7 +2,7 @@
 import math
 import torch
 import torch.nn as nn
-
+from pathlib import Path
 class QNetwork(nn.Module):
     """
     MLP backbone + (optional) Dueling head.
@@ -63,7 +63,7 @@ class QNetwork(nn.Module):
             return self.head(z)
 
 
-def load_model(path: str, expected_input_dim: int = None, device: str = "cpu") -> QNetwork:
+def load_model_dqn(path: Path, simulator_mode: str ,expected_input_dim: int = None, device: str = "cpu") -> QNetwork:
     state_dict = torch.load(path, map_location=device)
 
     # Extract input/output dims from state_dict
@@ -78,5 +78,6 @@ def load_model(path: str, expected_input_dim: int = None, device: str = "cpu") -
     # Infer model architecture from saved weights
     model = QNetwork(input_dim=input_dim, output_dim=output_dim).to(device)
     model.load_state_dict(state_dict)
-    model.eval()
+    if simulator_mode != "train":
+        model.eval()
     return model

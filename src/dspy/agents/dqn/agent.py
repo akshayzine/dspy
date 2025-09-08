@@ -45,6 +45,8 @@ class DQNAgent:
         # Will be updated each step
         self.action_idx = 0
         self.inventory = 0  # Must be injected from simulator before each step
+
+
     
 
     def act(self, state: list[float], explore=True) -> int:
@@ -94,14 +96,27 @@ class DQNAgent:
             }
         """
         ask_offset, bid_offset = self.action_set[self.action_idx]
+        tick_s = self.tick_size
+        inv = getattr(self, "inventory", 0)  # Get current inventory from sim
 
         # Action is defined in LOB ticks from best ask/bid
-        bid_px = best_bid - (bid_offset - 1) * self.tick_size
-        ask_px = best_ask + (ask_offset - 1) * self.tick_size
+        bid_px = best_bid - (bid_offset - 1) * tick_s
+        bid_px = round(min(bid_px, best_ask - tick_s),1)  # Ensure bid < ask
+        
+
+        ask_px = best_ask + (ask_offset - 1) * tick_s
+        ask_px =round(max(ask_px, best_bid + tick_s),1)  # Ensure ask > bid
+        # Ensure bid < ask    (necessary for spread of 0.2 spread)        
+        if ask_px <= bid_px:
+            if inv>=0:
+                ask_px = round(ask_px + tick_s,1)
+            else:
+                bid_px = round(bid_px - tick_s,1)
+                
 
 
         qty = self.min_order_size
-        inv = getattr(self, "inventory", 0)  # Get current inventory from sim
+        
 
         # Inventory-based quantity logic
         if inv > 0:

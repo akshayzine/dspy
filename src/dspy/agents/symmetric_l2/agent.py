@@ -39,8 +39,8 @@ class SymmetricL2Agent:
             dict: Quotes {"bid_px", "bid_qty", "ask_px", "ask_qty"}
         """
         
-        bid_px = best_bid - self.tick_size
-        ask_px = best_ask + self.tick_size
+        bid_px = best_bid #- self.tick_size
+        ask_px = best_ask #+ self.tick_size
 
         qty = self.base_quote_size
         inv = getattr(self, "inventory", 0)
