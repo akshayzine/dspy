@@ -1,23 +1,27 @@
 
 from pathlib import Path
 from typing import Callable
-from dspy.agents.dqn.model import load_model
+from dspy.agents.dqn.model import load_model_dqn
+# from dspy.agents.dqn.model import load_model_pg
 from dspy.utils import get_torch_device
+import os
 
 # ---------- Load agent dynamically ----------
 def get_agent(config: dict, feature_length: int = None) -> object:
     agent_config = config["agent"]
     agent_type = agent_config["type"].lower()
-    mode       = agent_config["mode"]
+    agent_mode = agent_config["mode"]
+    simulator_mode = config["simulator_mode"]
+
     t_device = get_torch_device(config["device"])
 
     if agent_type == "dqn":
         from dspy.agents.dqn.agent import DQNAgent
         from dspy.agents.dqn.model import QNetwork
 
-        if mode == "pretrained":
-            load_path = "src/dspy/agents/dqn/saved/"
-            model=load_model(load_path,feature_length)
+        if agent_mode == "pretrained":
+            load_path = Path(__file__).parent/"dqn/saved/run_model/model.pt"
+            model=load_model_dqn(load_path,simulator_mode)
         
         else:
             model = QNetwork(feature_length)
@@ -36,9 +40,9 @@ def get_agent(config: dict, feature_length: int = None) -> object:
         from dspy.agents.dqn.agent import DQNAgent
         from dspy.agents.dqn.model import QNetwork
 
-        if mode == "pretrained":
-            load_path = "src/dspy/agents/pg/saved/"
-            model=load_model(load_path,feature_length)
+        if agent_mode == "pretrained":
+            load_path = Path(__file__).parent/"pg/saved/run_model/model.pt"
+            model=load_model_pg(load_path,simulator_mode,feature_length)
         
         else:
             model = QNetwork(feature_length)

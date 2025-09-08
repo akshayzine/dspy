@@ -4,159 +4,154 @@ import numpy as np
 
 class NStepAdder:
     """
-    Safe O(n) n-step adder for DQN-style targets.
+    O(n) n-step adder with optional time-aware discounting (uses timestamps).
 
-    What it emits (when ready):
-        (s0, a0, R_n, s_n, d_n)
-      where
-        - s0, a0:   state/action at the *start* of the window,
-        - R_n:      n-step discounted return over rewards in the window,
-                    R_n = r_{t+1} + γ r_{t+2} + ... + γ^{n-1} r_{t+n}
-        - s_n:      next-state at the *end* of the window,
-        - d_n:      0.0 for non-terminal windows; 1.0 for tails at episode end
-                    (so the learner naturally drops the bootstrap term).
+    Emits (when ready): (s0, a0, R_n, s_n, d_n, gamma_prod)
+      - R_n      : n-step discounted return over the window
+                   If time-aware:    R_n = r1 + g1 r2 + g1 g2 r3 + ...
+                   where g_i = (gamma_nano) ** Δt_i
+                   If constant-γ:    R_n = r1 + γ r2 + γ^2 r3 + ...
+      - gamma_prod: ∏ of step discounts across the window (0.0 for terminal tails)
 
-    Usage pattern (every env step):
-        out = adder.push(s_t, a_t, r_{t+1}, s_{t+1}, done_{t+1})
-        if out is not None:
-            replay.add(*out)
+    Minimal change from your prior adder:
+      - push(...) now takes an extra `time_curr` (the tape timestamp for this step)
+      - pass `gamma_nano` at construction to enable time-aware discounting
 
-    At episode end:
-        for out in adder.flush_end_episode():
-            replay.add(*out)
-
-    Complexity:
-        - Per push: O(1) bookkeeping.
-        - When ready to emit: O(n) to sum ≤ n rewards (n is small, e.g., 5).
-        - No accumulators that can drift; numerically robust.
     """
 
-    # __slots__ saves memory by fixing the instance attribute set.
-    __slots__ = ("n", "gamma", "S", "A", "R", "S2", "D")
+    __slots__ = (
+        "n", "gamma", "gamma_nano", "ts_unit", "dt_cap", "use_time",
+        "_ts_scale", "S", "A", "R", "S2", "D", "T"
+    )
 
-    def __init__(self, n: int, gamma: float):
+    def __init__(
+        self,
+        n: int,
+        gamma: float,
+        gamma_nano: float | None = None,
+        dt_cap: float = 3*1e9 
+    ):
         """
         Args:
-            n (int):      the n in "n-step" (window length).
-            gamma (float):discount factor γ in (0, 1].
-
-        Internal buffers (all aligned oldest -> newest):
-            S  : deque of states s_t          (for each 1-step transition)
-            A  : deque of actions a_t
-            R  : deque of rewards r_{t+1}     (1-step rewards)
-            S2 : deque of next-states s_{t+1}
-            D  : deque of done flags for s_{t+1} (True if terminal at s_{t+1})
+            n            : n-step window length (>=1)
+            gamma        : per-event discount (used if gamma_nano is None)
+            gamma_nano   : per-nano_second discount; if set, use γ_eff = γ_nanos ** Δt
+            dt_cap       : cap Δt (nanos) to avoid huge gaps/outliers
         """
         assert n >= 1, "n-step must be >= 1"
         self.n = int(n)
         self.gamma = float(gamma)
+        self.gamma_nano = float(gamma_nano) if gamma_nano is not None else None
+        self.dt_cap = float(dt_cap)
+        self.use_time = self.gamma_nano is not None
 
-        # We do not set maxlen on R; we explicitly control sliding.
+
+        # Deques (oldest -> newest)
         self.S: Deque = deque()
         self.A: Deque = deque()
         self.R: Deque = deque()
         self.S2: Deque = deque()
         self.D: Deque = deque()
+        self.T: Deque = deque()  # timestamps aligned with rewards/next-states
 
     def reset_window(self) -> None:
-        """
-        Clear all deques. Call at episode reset, or after flush.
-        """
-        self.S.clear(); self.A.clear(); self.R.clear(); self.S2.clear(); self.D.clear()
+        self.S.clear(); self.A.clear(); self.R.clear()
+        self.S2.clear(); self.D.clear(); self.T.clear()
 
-    @staticmethod
-    def _discounted_sum(rs: Iterable[float], gamma: float) -> float:
+    # ---- core math ----
+    def _discounted_sum_from_times(
+        self, rs: Iterable[float], ts: Iterable[float]
+    ) -> tuple[float, float]:
         """
-        Compute sum_{k=0}^{L-1} gamma^k * rs[k] safely in float64.
+        Variable-step discount:
+          R_n = r1 + g1 r2 + g1 g2 r3 + ... ; g_i = γ_per_sec^{Δt_i} (or γ if constant)
+        Returns (R_n, gamma_prod). Works directly over deques/iterables (no list()).
+        """
+        it_r = iter(rs)
+        it_t = iter(ts)
+
+        try:
+            r0 = float(next(it_r))
+            t_prev = float(next(it_t))
+        except StopIteration:
+            return 0.0, 0.0
+
+        acc = r0
+        gprod = 1.0
+
+        if self.use_time:
+            gps = self.gamma_nano
+            dcap = self.dt_cap
+            for r, t in zip(it_r, it_t):
+                dt = (float(t) - t_prev) # in nano
+                if dt < 0.0: dt = 0.0
+                if dt > dcap: dt = dcap
+                g_step = gps ** dt
+                gprod *= g_step
+                acc += gprod * float(r)
+                t_prev = float(t)
+        else:
+            g = self.gamma
+            for r, _t in zip(it_r, it_t):
+                acc += gprod * float(r)
+                gprod *= g
+                
+            gprod /= g  # 
+
+        return float(acc), float(gprod)
+
+    # ---- public API ----
+    def push(self, s, a, r, s_next, done_next, time_curr) -> Optional[Tuple]:
+        """
+        Append one 1-step transition (timestamp = time_curr) and maybe emit an n-step tuple.
 
         Args:
-            rs    : iterable of rewards ordered oldest -> newest.
-            gamma : discount factor γ.
+            s, a, r, s_next, done_next : usual 1-step pieces (same tick)
+            time_curr                  : current *tape* timestamp (units = ts_unit)
 
         Returns:
-            float: discounted sum as Python float (float64 precision).
+            None OR (s0, a0, R_n, s_n, d_n, gamma_prod)
         """
-        acc = 0.0      # accumulator in float64
-        g   = 1.0      # current power of γ, starts at γ^0
-        for r in rs:
-            acc += g * float(r)
-            g   *= gamma
-        return float(acc)
+        # append newest step
+        self.S.append(s); self.A.append(int(a)); self.R.append(float(r))
+        self.S2.append(s_next); self.D.append(bool(done_next)); self.T.append(time_curr)
 
-    def push(self, s, a, r, s_next, done_next) -> Optional[Tuple]:
-        """
-        Append a single 1-step transition and (maybe) emit one n-step tuple.
-
-        Args (all correspond to the *same* tick):
-            s         : s_t        (current state)
-            a         : a_t        (action taken at s_t)
-            r         : r_{t+1}    (reward observed *after* stepping)
-            s_next    : s_{t+1}    (next state after stepping)
-            done_next : done flag for s_{t+1} (episode terminates at s_{t+1})
-
-        Returns:
-            None OR a single 5-tuple (s0, a0, R_n, s_n, d_n) when the window
-            reaches length n and the *current* transition is not terminal.
-            (We emit tails with d_n=1.0 in flush_end_episode instead.)
-        """
-        # Append the 1-step pieces to the back (newest position)
-        self.S.append(s)
-        self.A.append(int(a))
-        self.R.append(float(r))
-        self.S2.append(s_next)
-        self.D.append(bool(done_next))
-
-        # Only emit when:
-        #   - window just reached size n, AND
-        #   - the current (newest) transition is NOT terminal.
-        # If terminal, we wait and let flush_end_episode() mark tails with d_n=1.
+        # Emit when window reached n and newest step is non-terminal
         if (not done_next) and (len(self.R) == self.n):
-            # Build n-step discounted return over the current window
-            Rn = np.float32(self._discounted_sum(self.R, self.gamma))
-
-            # Prepare output: start-of-window (oldest) to end-of-window (newest)
+            Rn, gamma_prod = self._discounted_sum_from_times(self.R, self.T)
             out = (
-                self.S[0],            # s0
-                self.A[0],            # a0
-                Rn,                   # R_n
-                self.S2[-1],          # s_n  (next-state at window end)
-                np.float32(0.0),      # d_n  (non-terminal window)
+                self.S[0],                 # s0
+                self.A[0],                 # a0
+                np.float32(Rn),            # R_n
+                self.S2[-1],               # s_n
+                np.float32(0.0),           # d_n
+                np.float32(gamma_prod),    # ∏ step discounts
             )
-
-            # Slide the window forward by one: drop the oldest transition
-            self.S.popleft(); self.A.popleft(); self.R.popleft(); self.S2.popleft(); self.D.popleft()
+            # slide window by one
+            self.S.popleft(); self.A.popleft(); self.R.popleft()
+            self.S2.popleft(); self.D.popleft(); self.T.popleft()
             return out
 
-        # Not ready to emit yet
         return None
 
     def flush_end_episode(self):
         """
-        Emit *all* remaining windows as terminal (d_n = 1.0), then reset.
-
-        Why terminal here?
-            At episode end, there is no valid bootstrap beyond the last tick.
-            So every tail window must be treated as done (d_n = 1.0), making the
-            (1 - d_n) * γ^n * max_a' Q(s_n, a') term vanish in the target.
-
-        Returns:
-            list of (s0, a0, R_n, s_n, 1.0) tuples.
+        Emit all remaining windows as terminal (d_n=1.0; gamma_prod=0), then reset.
         """
         outs = []
         while len(self.R) > 0:
-            # Discount over the *current* tail (length L <= n)
-            Rn = np.float32(self._discounted_sum(self.R, self.gamma))
+            Rn, _ = self._discounted_sum_from_times(self.R, self.T)
             outs.append((
-                self.S[0],           # s0
-                self.A[0],           # a0
-                Rn,                  # R_L (shorter-than-n)
-                self.S2[-1],         # s_L (end-of-tail next-state)
-                np.float32(1.0),     # d_n = 1.0 (terminal)
+                self.S[0],               # s0
+                self.A[0],               # a0
+                np.float32(Rn),          # R_L  (L <= n)
+                self.S2[-1],             # s_L
+                np.float32(1.0),         # d_n = 1.0 (terminal)
+                np.float32(0.0),         # gamma_prod = 0.0 (no bootstrap)
             ))
+            # slide by one to expose the next tail
+            self.S.popleft(); self.A.popleft(); self.R.popleft()
+            self.S2.popleft(); self.D.popleft(); self.T.popleft()
 
-            # Slide by one to emit the next shorter tail on the next loop iter
-            self.S.popleft(); self.A.popleft(); self.R.popleft(); self.S2.popleft(); self.D.popleft()
-
-        # Ready for the next episode
         self.reset_window()
         return outs
