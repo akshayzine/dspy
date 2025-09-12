@@ -6,7 +6,7 @@
 ## At a glance
 - **Data loader**: **Tardis only** (`dspy.hdb.tardis_*`).
 - **Simulator**: event‑driven LOB replay with outbound latency, at‑touch fills, inventory/cost accounting, reward = realized cash – inventory penalty.
-- **Agents**: DQN (`src/dspy/agents/dqn/*`) with Double DQN, Dueling head, n‑step targets, ε‑anneal, AMP; baseline `symmetric_l2`.
+- **Agents**: DQN (`src/dspy/agents/dqn/*`) with Double DQN, Dueling head, n‑step targets, ε‑anneal, AMP; baseline `symmetric_l1`.
 - **Config‑first runs**: Edit JSONs under `run/` then `python run/run_simulation.py`.
 - **Outputs**: logs under `logs/`, checkpoints under `src/dspy/agents/dqn/saved/`.
 
@@ -40,7 +40,7 @@ dspy/
    ├─ features/                   # feature registry & utils
    ├─ sim/                        # MarketSimulator, Order, SimEnv wrapper
    └─ agents/
-      ├─ symmetric_l2/            # baseline at‑touch L1 agent
+      ├─ symmetric_l1/            # baseline at‑touch L1 agent
       └─ dqn/
          ├─ agent.py, model.py, train.py, replay_buffer.py, nstep_adder.py
          └─ saved/
@@ -155,7 +155,7 @@ dspy/data/tardis/processed/
 
 ## Evaluation flow
 1. **Select the agent**
-   - **Baseline**: `"agent": {"type": "symmetric_l2", "mode": "eval"}`
+   - **Baseline**: `"agent": {"type": "symmetric_l1", "mode": "eval"}`
    - **DQN (pretrained)**: `"agent": {"type": "dqn", "mode": "pretrained"}`
 2. **Point to a checkpoint**
    - Recommended: copy the trained model to

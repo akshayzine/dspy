@@ -12,6 +12,9 @@ from datetime import datetime, timedelta,timezone
 import pytz
 import polars as pl
 import torch
+import os, random
+import numpy as np 
+
 
 def nanoseconds(input: Union[str, datetime]) -> int:
     """
@@ -133,3 +136,19 @@ def get_torch_device(pref: str | None = None) -> torch.device:
     # if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
     #     return torch.device("mps")
     return torch.device("cpu")
+
+def set_global_seeds(seed: int = 42, deterministic: bool = True) -> None:
+    # no-op if already seeded with same value
+    if os.environ.get("DSPY_SEEDED") == str(seed):
+        return
+
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed); np.random.seed(seed)
+    torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
+
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
+
+    os.environ["DSPY_SEEDED"] = str(seed)

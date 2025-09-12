@@ -1,0 +1,52 @@
+params: 
+Feature Selection Run – Final Params
+
+    Correlation cutoff: Spearman |ρ| = 0.90 (feature–feature pruning)
+
+    Top‑N per horizon:
+
+        100 ms → 12
+
+        200 ms → 10
+
+        500 ms → 8
+
+        1000 ms → 8
+
+        5000 ms → 6
+
+    min_fold_count:
+
+        100 ms → 4/5 folds
+
+        others → 3/5 folds
+
+
+Features: 
+
+
+
+--- Computing mean/std for final selected features ---
+book_imbalance_5: mean=0.0008560541941196107, std=0.5898300321924179 -
+spread: mean=0.10551989631703115, std=0.056951933496810075 -
+
+ret_100ms_cvwap_level3: mean=4.6693126206057075e-09, std=1.551256967549904e-05 -
+ret_200ms_cvwap_level3: mean=7.224606806344048e-09, std=2.4958473109441747e-05 -
+ret_400ms_cvwap_level3: mean=1.325033565726567e-08, std=3.943220192392379e-05 -
+
+realized_vol_100ms_mid: mean=2.140239446822367e-06, std=9.133660371231828e-06-
+realized_vol_200ms_vwap_level3: mean=3.0337930639677843e-06, std=9.58982261616058e-06-
+realized_vol_200ms_mid: mean=3.025659083979812e-06, std=9.714419424719938e-06-
+realized_vol_350ms_mid: mean=3.792830030183185e-06, std=9.94037509513952e-06-
+realized_vol_350ms_vwap_level3: mean=3.7914406723855092e-06, std=9.81729669515446e-06-
+realized_vol_500ms_mid: mean=4.320216227263236e-06, std=9.988704369645626e-06-
+realized_vol_700ms_mid: mean=4.833741592623401e-06, std=9.96299481239274e-06-
+realized_vol_1000ms_mid: mean=5.390539638426475e-06, std=9.867305678176024e-06-
+realized_vol_2000ms_mid: mean=6.423783385343473e-06, std=9.528690964033173e-06-
+
+realized_vol_200_ticks_mid: mean=8.604206370706998e-06, std=8.133219443911408e-06 -
+
+zscore_150ms_mid: mean=-0.00018712350917991457, std=0.2619815837191059-
+zscore_1000ms_vwap_level3: mean=0.003657362697307431, std=1.3764521659271938-
+zscore_2000ms_vwap_level3: mean=0.006452776940803942, std=1.5347279506992464
+
