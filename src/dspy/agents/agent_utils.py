@@ -56,9 +56,9 @@ def get_agent(config: dict, feature_length: int = None) -> object:
         )
         return agent
 
-    elif agent_type == "symmetric_l2":
-        from dspy.agents.symmetric_l2.agent import SymmetricL2Agent
-        agent = SymmetricL2Agent(
+    elif agent_type == "symmetric_1":
+        from dspy.agents.symmetric_l1.agent import SymmetricL1Agent
+        agent = SymmetricL1Agent(
             tick_size=config["tick_size"],
             min_order_size=config["min_order_size"],
             max_inventory=config["max_inventory"],

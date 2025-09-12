@@ -1,5 +1,5 @@
 from typing import Optional
-class SymmetricL2Agent:
+class SymmetricL1Agent:
     def __init__(
         self,
         tick_size: float,
@@ -9,7 +9,7 @@ class SymmetricL2Agent:
         
     ):
         """
-        Symmetric L2 agent that always quotes at second level (best ± tick)
+        Symmetric L1 agent that always quotes at second level (best ± tick)
         with inventory-aware quantity sizing.
 
         Args:

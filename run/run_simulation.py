@@ -15,6 +15,7 @@ from dspy.sim.market_simulator import MarketSimulator
 from dspy.utils import to_ns, ts_to_str, get_torch_device
 from dspy.features.feature_utils import apply_batch_features, extract_features , flatten_features
 from dspy.agents.agent_utils import get_agent
+from dspy.utils import set_global_seeds
 
 
 # ---------- Load run config file ----------
@@ -22,6 +23,7 @@ from dspy.agents.agent_utils import get_agent
 def load_config(path: Path) -> dict:
     with open(path, "r") as f:
         return json.load(f)
+
 
 
 
@@ -47,6 +49,10 @@ def run_simulation(config: dict):
     eval_log_flag    = config["eval_log_flag"]
     std_flag         = config["standard_scaling_feat"]
     comp_system        = config["comp_system"]
+
+    # ---- Reproducibility: set seeds up-front ----
+    seed = config.get("seed", 42)
+    set_global_seeds(seed, deterministic=True)
 
     t_device = get_torch_device(config["device"])
     print("Using device:", t_device)
