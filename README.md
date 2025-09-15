@@ -1,4 +1,4 @@
-# DSPy — RL Market‑Making Simulator & LOB Replay
+# RLMM(DSPy) — RL Market‑Making Simulator & LOB Replay
 
 > A modular Python framework for **high‑frequency market making research** on Binance BTCUSDT via **Tardis** LOB replay.
 > Core pieces: event‑driven `MarketSimulator`, feature registry (Polars), and a DQN agent with replay & n‑step returns.
@@ -35,17 +35,24 @@ dspy/
 ├─ scripts/
 │  ├─ run_sim_cpu.sbatch          # Warwick Avon CPU example
 │  └─ run_sim_gpu.sbatch          # Warwick Avon GPU example
-└─ src/dspy/
-   ├─ hdb/                        # Tardis loader/registry
-   ├─ features/                   # feature registry & utils
-   ├─ sim/                        # MarketSimulator, Order, SimEnv wrapper
-   └─ agents/
-      ├─ symmetric_l1/            # baseline at‑touch L1 agent
-      └─ dqn/
-         ├─ agent.py, model.py, train.py, replay_buffer.py, nstep_adder.py
-         └─ saved/
-            ├─ run_model/model.pt # <-- default checkpoint path used for eval
-            └─ YYYY-MM-DD_HH-MM-SS/{model.pt, run_config.json, train_config.json, feature_config.json}
+├─ src/dspy/
+│  ├─ hdb/                        # Tardis loader/registry
+│   ├─ features/                   # feature registry & utils
+│   ├─ sim/                        # MarketSimulator, Order, SimEnv wrapper
+│   └─ agents/
+│      ├─ symmetric_l1/            # baseline at‑touch L1 agent
+│      └─ dqn/
+│         ├─ agent.py, model.py, train.py, replay_buffer.py, nstep_adder.py
+│         └─ saved/
+│            ├─ run_model/model.pt # <-- default checkpoint path used for eval
+│            └─ YYYY-MM-DD_HH-MM-SS/{model.pt, run_config.json, train_config.json, feature_config.json}
+└─ evaluation_check/    
+   ├─ base_stats.py     
+   ├─ base_latency_fees.json
+   ├─ evaluation_check_base.sh  # Evaluation Results for base regime
+   ├─ latency_fees_sensitivity.py
+   ├─ sensitivity_latency_fees.json
+   └─ evaluation_check_sensitivity.sh #Evaulation Results for latency fees sensitivity
 ```
 
 
@@ -88,24 +95,26 @@ dspy/data/tardis/processed/
 **`run/run_config.json`**
 ```jsonc
 {
-  "dataset": "tardis",                 // fixed: Tardis loader
-  "product": "BTCUSDT",                // instrument symbol
-  "market": "binance-futures",         // venue/stream label (used by loader)
-  "depth": 5,                          // LOB levels to replay (near‑touch features)
-  "tick_size": 0.10,                   // price grid (sim clamps to this)
-  "latency_micros": 10000,             // outbound order latency in microseconds
-  "cost_in_bps": 0.2,                  // taker/maker fee model in basis points (fills only)
-  "max_inventory": 0.0001,             // absolute inventory cap
-  "inventory_penalty": 0.025,          // λ for quadratic inventory penalty in reward
-  "initial_cash": 100000,              // starting cash (used for realized PnL)
-  "min_order_size": 0.0001,            // minimum size
-  "device": "auto",                    // "cpu" | "cuda" | "auto"
-  "label": "training_dqn_run1",        // short tag used in logs/paths
-  "agent": { "type": "dqn", "mode": "train" },   // DQN training; use "pretrained" for eval
-  "simulator_mode": "train",           // "train" or "eval"
-  "standard_scaling_feat": true,       // apply stored mean/std from features config
-  "intervals": [                       // time windows (inclusive/exclusive by loader)
-    { "start": "2025-04-11 00:29:00", "end": "2025-04-14 22:29:30" }
+  "dataset": "tardis",                     // fixed: Tardis loader
+  "product": "BTCUSDT",                    // instrument symbol
+  "market": "binance-futures",             // venue/stream label (used by loader)
+  "depth": 5,                              // LOB levels to replay (near‑touch features)
+  "tick_size": 0.10,                       // price grid (sim clamps to this)
+  "latency_micros": 10000,                 // outbound order latency in microseconds
+  "cost_in_bps": 0.2,                      // taker/maker fee model in basis points (fills only)
+  "fixed_cost": 0,
+  "max_inventory": 0.001,                  // absolute inventory cap
+  "inventory_penalty": 0.04,               // λ for quadratic inventory penalty in reward
+  "initial_cash": 1000,                    // starting cash (used for realized PnL)
+  "min_order_size": 0.001,                 // minimum size
+  "device": "auto",                        // "cpu" | "cuda" | "auto"
+  "label": "eval_run",                     // short tag used in logs/paths
+  "agent": { "type": "dqn", "mode": "eval" },   // DQN training; use "pretrained" for eval
+  "simulator_mode": "eval",                // "train" or "eval"
+  "standard_scaling_feat": true,           // apply stored mean/std from features config
+  "eval_log_flag": true,                   //switch on/off logging 
+  "intervals": [                           // time windows (inclusive/exclusive by loader)
+    { "start": "2025-04-15 02:00:00", "end": "2025-04-15 05:00:00" }
   ]
 }
 ```
@@ -113,27 +122,33 @@ dspy/data/tardis/processed/
 **`run/train_dqn_config.json`**
 ```jsonc
 {
-  "n_reward_step": 3,                  // n‑step return horizon (bias/variance trade‑off)
-  "time_based_discount": true,         // if true, use Δt‑aware discounting
-  "gamma": 0.997,                      // ONLY used when time_based_discount == false
-  "gamma_half_life_sec": 5.0,          // if time‑based, per‑second decay s.t. γ^(half_life)=0.5
-  "min_replay": 5000,                  // steps before starting SGD
-  "batch_size": 256,                   // transitions per SGD update
-  "train_freq": 10,                     // environment steps per SGD update
-  "sync_interval": 2000,               // target network sync period (in SGD updates or steps)
-  "double_dqn": true,                  // Double Q‑learning for overestimation bias reduction
-  "dueling": true,                     // Dueling head (value + advantage decomposition)
-  "epsilon_start": 1.0,                // ε‑greedy: starting exploration
-  "epsilon_end": 0.02,                 // ε‑greedy: final exploration
+  "lr": 1e-4,                         // learning rate
+  "weight_decay": 1e-5,               // L2 weight decay
+  "min_replay": 8000,                 // transitions required before training starts
+  "mdp_step_warmup": 10000,           // initial ticks before enabling full MDP triggers
+  "action_timeout_sec": 0.35,         // min dwell between actions during training
+  "use_huber": true,                  // use Huber loss
+  "double_dqn": true,                 // use Double DQN targets
+  "n_reward_step": 1,                 // n-step return horizon
+  "gamma": 0.99,                      // base per-step discount (used if time-based is off)
+  "time_based_discount": true,        // use time-aware discount γ^{Δt}
+  "gamma_half_life_sec": 5.0,         // if time-based, per-second decay s.t. γ^(half_life)=0.5
+  "epsilon_start": 1.00,              // initial ε for ε-greedy
+  "epsilon_end": 0.05,                // final ε for ε-greedy
   "epsilon_warmup_ticks": 10000,      // ticks to anneal ε from start→end
-  "use_huber": true,                   // Huber loss (robust to outliers)
-  "max_grad_norm": 10.0,               // gradient clipping (stability)
-  "amp": true                          // automatic mixed precision (throughput)
-  "num_episodes": 50,                  // number of epochs over data
-  "max_grad_norm": 8.0,                //gradient cutoff in backprop
-  "episode_logging": true,             //log in every epsiode
-  "step_logging": false,               //log every step (keep it false unless debug on small window)
+  "replay_capacity": 100000,          // max transitions stored in replay
+  "batch_size": 512,                  // SGD batch size
+  "sync_interval": 5000,              // target network sync interval (steps)
+  "num_episodes": 50,                 // number of training episodes
+  "max_grad_norm": 8.0,               // gradient clipping (L2 norm)
+  "train_freq": 10,                   // env steps per gradient update
+  "load_path": null,                  // optional checkpoint to load
+  "save_path": null,                  // optional checkpoint save path
+  "episode_logging": true,            // log per-episode metrics
+  "step_logging": false,              // log per-step metrics
+  "amp": true                         // use mixed precision
 }
+
 ```
 
 ---
@@ -177,12 +192,41 @@ dspy/data/tardis/processed/
 
 ---
 
+
 ## Where things log / save (summary)
 - **Training logs**: `dspy/logs/train_logs/dqn/`
 - **Evaluation logs**: `dspy/logs/eval_logs/`
 - **Checkpoints (canonical)**: `dspy/src/dspy/agents/dqn/saved/YYYY-MM-DD_HH-MM-SS/`
 - **Default eval checkpoint**: `dspy/src/dspy/agents/dqn/saved/run_model/model.pt`
 
+
+---
+
+## Result Verification 
+To verify statistical results, multiple simulations can be launched one by one, but convenience wrappers
+are provided under `evaluation_check/`, which runs **both agents** on the evaluation windows using the pretrained DQN, logs results, and generates summaries from the logs:
+
+Set values in `run/run_config.json`. Ensure the **evaluation intervals** are configured; set `"simulator_mode": "eval"` and `"eval_log_flag": true`.
+
+
+### 1) Base regime comparison (10 ms latency; 0.20 bps fees; Section 7.4.1)
+> **Note:** In the JSON, **latency is specified in microseconds**.
+
+```bash
+#go to evaluation_check folder
+cd ../evaluation_check   
+# verify latency/fees in: base_latency_fees.json   (latency in μs)
+bash evaluation_check_base.sh
+```
+### 2) Latency–fee sensitivity (Section 7.4.2)
+> **Note:** In the JSON grid, **latency is specified in microseconds**.
+
+```bash
+#go to evaluation_check folder
+cd ../evaluation_check
+# verify the grid in: sensitivity_latency_fees.json   (latency in μs)
+bash evaluation_check_sensitivity.sh
+```
 ---
 
 ## License

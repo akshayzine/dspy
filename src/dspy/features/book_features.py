@@ -99,13 +99,11 @@ def add_rel_returns(df: pl.DataFrame, cols: list[str]=['mid'], products: list[st
         cols = [cols]
     if products == []:
         df = df.with_columns(
-            # pl.col(f"{cols[0]}").pct_change().alias("rel_return")
             (pl.col(f"{cols[0]}") / pl.col(f"{cols[0]}").shift(1) - 1).alias(f"rel_return_{cols[0]}")
         )
     else:
         df = df.with_columns(
             [
-                #pl.col(f"{col}_{product}").pct_change().alias(f"rel_return_{col}_{product}")
                 (pl.col(f"{col}_{product}") / pl.col(f"{col}_{product}").shift(1) - 1).alias(f"rel_return_{col}_{product}")
                 for col in cols
                 for product in products
@@ -501,15 +499,13 @@ def add_realized_vol_time(
             ((pl.col(col_prefix) / pl.col(col_prefix).shift(1))-1).alias(ret_col)
         )
         
-        # print(df)
         rolling_df = (
             df.rolling(index_column=time_col, period=window_str, closed="right")
             .agg([pl.col(ret_col).std().alias(vol_col)])
         )
         rolling_df=rolling_df.with_columns(pl.col(vol_col).fill_nan(0).fill_null(0))
         df = rolling_df.join(df.drop(ret_col), on=time_col, how="right")
-        # df = df.select([col for col in df.columns if col != vol_col] + [vol_col])
-        # print(df)
+      
 
     else:
         for product in products:
@@ -527,7 +523,6 @@ def add_realized_vol_time(
             rolling_df=rolling_df.with_columns(pl.col(vol_col).fill_nan(0).fill_null(0))
 
             df = rolling_df.join(df.drop(ret_col), on=time_col, how="right")
-            # df = df.select([col for col in df.columns if col != vol_col] + [vol_col])
     return df.drop_nulls()
 
 def add_realized_vol_tick(

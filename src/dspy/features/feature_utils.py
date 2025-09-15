@@ -4,39 +4,6 @@ import polars as pl
 from dspy.features.feature_registry import FEATURE_REGISTRY
 import numpy as np
 
-# ----------------------------------------------------------------------------
-# apply_batch_features:
-# Applies all batch-level features to the full Polars DataFrame BEFORE simulation
-# ----------------------------------------------------------------------------
-# def apply_batch_features(df, feature_config: dict) -> tuple[pl.DataFrame, list[str]]:
-#     """
-#     Applies all batch features specified in the config and returns:
-#     - updated DataFrame
-#     - list of added feature column names
-#     """
-#     used_columns = []
-
-#     for key, config in feature_config.items():
-#         entry = FEATURE_REGISTRY.get(key)
-#         if not entry or entry["type"] != "batch":
-#             continue
-
-#         func = entry["func"]
-#         # If config is a list of param sets, apply each one
-#         if isinstance(config, list):
-#             for sub_cfg in config:
-#                 df_before = df.columns
-#                 df = func(df, **sub_cfg)
-#                 new_cols = set(df.columns) - set(df_before)
-#                 used_columns.extend(new_cols)
-#         else:
-#             df_before = df.columns
-#             df = func(df, **(config or {}))
-#             new_cols = set(df.columns) - set(df_before)
-#             used_columns.extend(new_cols)
-    
-
-#     return df, used_columns
 def apply_batch_features(df, feature_config, std_flag=False):
     used_columns = []
     ignore_base_list =['mid','vwap','cvwap']

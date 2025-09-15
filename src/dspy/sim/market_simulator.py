@@ -29,7 +29,8 @@ class MarketSimulator:
         cost_in_bps=0.0,
         fixed_cost=0.0,
         simulator_mode="eval",  # either "train" or "eval"
-        eval_log_flag = False
+        eval_log_flag = False,
+        folder_label = None
 
     ):
         """
@@ -82,9 +83,6 @@ class MarketSimulator:
         self.eval_log_flag = eval_log_flag
         self.prev_reward_time = None  # Track time of last reward update
 
-        
-
-
         self.active_orders = {"bid": None, "ask": None}
         self.pending_orders = {"bid": None, "ask": None}
         self.pending_quotes = {"bid": None, "ask": None}
@@ -133,6 +131,8 @@ class MarketSimulator:
         # Accumulators in float64
         self.cum_reward = np.float64(0.0)
 
+        self.folder_label = folder_label
+
 
     def total_pnl(self, mid):
         """Return total PnL = cash + inventory * midprice"""
@@ -159,16 +159,7 @@ class MarketSimulator:
         if self.drawdown > self.max_drawdown:
             self.max_drawdown = self.drawdown
 
-    # def update_reward(self, mid):
-    #     """
-    #     RL reward function :
-    #     Reward = ΔCash - Inventory Penalty
-    #     """
-    #     if self.simulator_mode == "train":
-    #         delta_cash = self.cash - self.prev_cash
-    #         penalty = self.inventory_penalty * (self.inventory ** 2)
-    #         self.reward = delta_cash - penalty
-    #         self.prev_cash = self.cash
+
     def update_reward(self, mid,time_r=None):
         """
         RL reward function (only in training mode):
@@ -224,7 +215,7 @@ class MarketSimulator:
 
         # Format current datetime to use as folder name
         current_dt = datetime.now().strftime("%Y%m%d_%H%M%S")
-        folder_path = Path(__file__).parent.parent.parent.parent / "logs/eval_logs" / current_dt
+        folder_path = Path(__file__).parent.parent.parent.parent / "logs/eval_logs" / self.folder_label
         folder_path.mkdir(parents=True, exist_ok=True)
 
         # Create filename like 2025-04-01_00-00-00__2025-04-02_12-59-59.csv
@@ -241,15 +232,11 @@ class MarketSimulator:
             writer.writeheader()
             writer.writerows(self.eval_log)
 
-        print(f"Saved evaluation log to {log_path}")
-
-
     
     def square_off(self, idx: int):
         """Force close remaining inventory at best bid/ask immediately."""
         qty = abs(self.inventory)
         if qty < self.min_order_size:
-            # optional: print once at episode end if needed
             return
 
         best_bid = float(self._best_bid[idx])
@@ -594,4 +581,4 @@ class MarketSimulator:
 
         # self._base_dim must already be set (size of self._feat_mat[idx])
         self.state_dim = int(self._base_dim + add)
-        print(f"Recomputed state_dim = {self.state_dim} (base={self._base_dim}, add={add})")
+        # print(f"Recomputed state_dim = {self.state_dim} (base={self._base_dim}, add={add})")

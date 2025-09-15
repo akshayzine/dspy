@@ -1,0 +1,38 @@
+{
+  "run1": {
+    "fees": 0.05,
+    "latency": 10000
+  },
+  "run2": {
+    "fees": 0.05,
+    "latency": 100000
+  },
+  "run3": {
+    "fees": 0.05,
+    "latency": 500000
+  },
+  "run4": {
+    "fees": 0.2,
+    "latency": 10000
+  },
+  "run5": {
+    "fees": 0.2,
+    "latency": 100000
+  },
+  "run6": {
+    "fees": 0.2,
+    "latency": 500000
+  },
+  "run7": {
+    "fees": 0.3,
+    "latency": 10000
+  },
+  "run8": {
+    "fees": 0.3,
+    "latency": 100000
+  },
+  "run9": {
+    "fees": 0.3,
+    "latency": 500000
+  }
+}

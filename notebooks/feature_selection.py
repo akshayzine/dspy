@@ -13,11 +13,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from dspy.hdb import get_dataset
-from dspy.sim.market_simulator import MarketSimulator
-from dspy.utils import to_ns, ts_to_str
-from dspy.features.feature_utils import apply_batch_features, extract_features , flatten_features
-from dspy.agents.agent_utils import get_agent
-from dspy.features.utils import get_products
+from dspy.features.feature_utils import apply_batch_features
 from dspy.utils import add_ts_dt
 
 
@@ -46,17 +42,16 @@ initial_cash     = config["initial_cash"]
 cost_in_bps      = config["cost_in_bps"]
 fixed_cost       = config["fixed_cost"]
 simulator_mode   = config["simulator_mode"]
-system_pc        = config["system_pc"]
+system_pc        = config["comp_system"]
 
 loader = get_dataset(dataset_name)
 all_books, all_ts = [], []
-feature_path = project_root / "run/features list selection.json"
+feature_path = project_root / "run/features_list_selection.json"
 feature_config = load_config(feature_path)
 inventory_feature_flag = "inventory" in feature_config.keys()
 
 
 from dspy.features.book_features import add_mid,add_vwap,add_ts_dt
-
 
 
 #function to add targets
@@ -117,11 +112,7 @@ def add_target_ret_time(
 
     return df.drop_nulls()
 
-
-# --- All your existing function definitions and config loading can stay the same ---
-# correlation_xgb_feature_selection(), add_target_ret_time(), etc.
-
-# --- MAIN EXECUTION LOGIC (REVISED WITH YOUR CHUNKING STRATEGY) ---
+# --- MAIN EXECUTION LOGIC (REVISED WITH CHUNKING STRATEGY) ---
 
 # 1. Load the single, massive interval as you are doing now
 print('Loading the full dataset...')
@@ -145,7 +136,7 @@ print('Full dataset loaded. Shape:', df.shape)
 print( ' Estimated size of df in MB: ', df.estimated_size("mb"))
 
 # 2. Define the number of chunks and the directory for processed files
-num_chunks = 20
+num_chunks = 1
 chunk_size = len(df) // num_chunks # Use integer division
 processed_data_dir = Path(__file__).parent/ "chunk_data"
 print(processed_data_dir)
@@ -195,13 +186,9 @@ all_processed_files = list(processed_data_dir.glob("*.parquet"))
 # df = pl.read_parquet(all_processed_files)
 df = pl.scan_parquet(all_processed_files) 
 
-# print('Final dataframe created. Shape:', df.shape)
 
 # 6. Now run your feature selection as before
 print('\n--- Starting Feature Selection ---')
-# ... (Your call to correlation_xgb_feature_selection goes here) ...
-
-
 
 def correlation_xgb_feature_selection_lazy(
     df_lazy: pl.LazyFrame,
@@ -238,8 +225,6 @@ def correlation_xgb_feature_selection_lazy(
     df_sample = df_lazy.slice(0, 5_000_000).collect() \
                        .sample(n=2_000_000, shuffle=True, seed=42)
 
-    print(f"Sample created with shape: {df_sample.shape}")
-
     # --- Step 2: Correlation filtering on the sample ---
     print("Calculating correlation matrix on the sample...")
     corr_matrix = df_sample.select(reduced_features_0) \
@@ -257,11 +242,9 @@ def correlation_xgb_feature_selection_lazy(
     
     for target in targets:
          
-        print(f"\nTop correlations with target: {target}")
         corr_series = feat_target_corr[target].drop(target)  # remove self-correlation
         # Sort by absolute correlation, descending
         corr_series = corr_series.reindex(reduced_features_0).abs().sort_values(ascending=False).head(10)
-        print(corr_series)
 
     upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
     to_drop_corr = [col for col in upper.columns if any(upper[col] > corr_threshold)]
@@ -311,7 +294,6 @@ def correlation_xgb_feature_selection_lazy(
         avg_importances = np.mean(fold_importances, axis=0)
         imp_df = pd.DataFrame({"feature": reduced_features, "importance": avg_importances, "target": target}).sort_values("importance", ascending=False)
         all_importances.append(imp_df)
-        print('stable_features:', stable_features)
 
     # --- Final combination step ---
     all_importances_df = pd.concat(all_importances)
@@ -327,14 +309,9 @@ def correlation_xgb_feature_selection_lazy(
 
 
 
-#get target
-time_horizons=[100,200,500,1000,5000] #in ms
+
 feature_length=[12,10,8,8,6]
 price ='mid'
-target_list=[]
-for t in time_horizons:
-     df=add_target_ret_time(df,t,price)
-     target_list.append(f"ret_{t}ms_fut")
 
 print('selection features')
 final_feats, importance_df = correlation_xgb_feature_selection_lazy(
@@ -348,7 +325,7 @@ final_feats, importance_df = correlation_xgb_feature_selection_lazy(
 
 # --- Compute mean and std for final selected features ---
 print("\n--- Computing mean/std for final selected features ---")
-# final_feats = feature_cols
+
 # Collect only needed columns from df_lazy to save memory
 df_selected = df.select(final_feats).collect()
 

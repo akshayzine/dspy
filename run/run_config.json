@@ -3,30 +3,55 @@
   "product": "BTCUSDT",
   "market": "binance-futures",
   "depth": 5,
-  "latency_micros": 10000,
   "max_inventory": 0.001,
   "inventory_penalty": 0.04,
   "initial_cash": 1000,
   "min_order_size": 0.001,
-  "tick_size": 0.10,
-  "cost_in_bps": 0.2,  
-  "fixed_cost": 0, 
+  "tick_size": 0.1,
+  "fixed_cost": 0,
   "standard_scaling_feat": true,
-  "eval_log_flag": false,
+  "eval_log_flag": true,
   "device": "auto",
-  "comp_system":"persl",
-  "label": "ab_mac_dqn_n_step_1",
-
+  "latency_micros": 10000,
+  "cost_in_bps": 0.2,
+  "label": "l1_l_10000_c_0p2",
   "agent": {
-    "type": "dqn",
-    "mode": "train"
+    "type": "symmetric_l1",
+    "mode": "pretrained"
   },
-
-  "simulator_mode": "train",
+  "simulator_mode": "eval",
   "intervals": [
     {
-      "start": "2025-04-14 12:00:00",
-      "end": "2025-04-15 12:00:00"
+      "start": "2025-04-15 02:00:00",
+      "end": "2025-04-15 05:00:00"
+    },
+    {
+      "start": "2025-04-17 10:00:00",
+      "end": "2025-04-17 13:00:00"
+    },
+    {
+      "start": "2025-04-17 20:30:00",
+      "end": "2025-04-17 23:30:00"
+    },
+    {
+      "start": "2025-04-19 07:00:00",
+      "end": "2025-04-19 10:00:00"
+    },
+    {
+      "start": "2025-04-21 17:30:00",
+      "end": "2025-04-21 20:30:00"
+    },
+    {
+      "start": "2025-04-22 04:00:00",
+      "end": "2025-04-22 07:00:00"
+    },
+    {
+      "start": "2025-04-22 18:00:00",
+      "end": "2025-04-22 21:00:00"
+    },
+    {
+      "start": "2025-04-24 14:00:00",
+      "end": "2025-04-24 17:00:00"
     }
   ]
 }

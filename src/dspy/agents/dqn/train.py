@@ -37,6 +37,9 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
 
     
     model = agent.model.float().to(device)
+    agent.model = model          # ensure agent.act() uses THIS object
+    agent.device = device        # ensure act() moves tensors to the same device
+
 
     input_dim  = getattr(model, "input_dim", env.state_dim)
     output_dim = getattr(model, "output_dim", agent.num_actions if hasattr(agent, "num_actions") else None)
@@ -65,9 +68,7 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
             betas=(0.9, 0.999)  ###added
         )
 
-    # Replay buffer for experience replay
-    # buffer = ReplayBuffer(train_config["buffer_size"], pin_memory=use_cuda)
-    
+    # Replay buffer for experience replay    
     replay = make_replay_buffer(device,
                             state_dim=env.state_dim,
                             capacity=train_config["replay_capacity"],
@@ -146,7 +147,6 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
         prev_time = None
         done = env.is_done()
         while not done :
-            # print(global_step,"==")
             # === Get current environment state ===
             i = env.ptr  # Current index in the LOB data
             env.pre_step()  # Pre-step 
@@ -154,7 +154,6 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
             state = env.get_state_vector(i)
             done = env.is_done()
             action_triggered = False
-            # print(f"Episode: {episode}, Step: {env.ptr}, Done: {done}, Data Length: {len(env.book)}")
 
             # Get basic LOB snapshot (best ask and best bid)
             best_ask = float(env.best_ask(i))
@@ -187,11 +186,8 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
             
             env.step_with_injected_quotes()
 
-            # done_check = env.is_done() #for end of episode check
             
             # === Store transition in replay buffer ===
-            # if not done_check:
-            #     next_state = env.get_state_vector(i)
             if done:
                 last_idx = max(env.ptr - 1, 0)
                 if env.inventory != 0:
@@ -199,7 +195,6 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                 reward = env.reward
                 
                 if prev_state is not None and prev_action is not None:
-                    # replay.add(prev_state, int(prev_action), np.float32(reward), state, 1 if done else 0)
                     mdp_reward += reward ##Cumulate reward till action taken
                     if action_triggered :
                         out = adder.push(prev_state.copy(), int(prev_action), mdp_reward, state.copy(), bool(done),prev_action_time)
@@ -225,7 +220,6 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                 reward = env.reward
             
                 if prev_state is not None and prev_action is not None:
-                    # replay.add(prev_state, int(prev_action), np.float32(reward), state, 1 if done else 0)
                     mdp_reward += reward  ##Cumulate reward till action taken
                     if action_triggered :
                         out = adder.push(prev_state.copy(), int(prev_action), mdp_reward, state.copy(), bool(done),prev_action_time)
@@ -304,20 +298,6 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
 
                 optimizer.zero_grad(set_to_none=True)
 
-
-                #                 # dspy/src/dspy/agents/dqn/train.py  (inside the update step)
-                # states, actions, rewards, next_states, dones, gammas = replay.sample(batch_size)
-
-                # q_sa = online_net(states).gather(1, actions.view(-1,1)).squeeze(1)
-                # a_star = online_net(next_states).argmax(dim=1)
-                # q_tgt_next = target_net(next_states).gather(1, a_star.view(-1,1)).squeeze(1)
-
-                # # time-aware n-step target
-                # y = rewards + gammas * q_tgt_next * (1.0 - dones)
-
-                # loss_per = F.smooth_l1_loss(q_sa, y.detach(), reduction="none")
-                # loss = loss_per.mean()
-
                 # === Forward / loss / backward (AMP on CUDA) ===
                 if use_amp:
                     with autocast(device_type="cuda", dtype=torch.float16, enabled=True): # RTX 6000 (Turing) → FP16 autocast
@@ -329,8 +309,6 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                                 next_q = target_model(s_).gather(1, a_star).squeeze(1)
                             else:
                                 next_q = target_model(s_).max(dim=1).values
-
-                            # target = (r + gamma_n * next_q * (1.0 - d)).float() #Ensure FP32
                             
                             target = (r + g * next_q * (1.0 - d)).float()
 
@@ -354,7 +332,6 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
                         else:
                             next_q = target_model(s_).max(dim=1).values
 
-                        # target = r + gamma_n * next_q * (1.0 - d)
                         target = r + g * next_q * (1.0 - d)
 
                     loss = F.smooth_l1_loss(q_val, target) if use_huber else F.mse_loss(q_val, target)
@@ -365,14 +342,12 @@ def train_dqn(train_config: dict, env_fn,run_config: dict,features_config: dict 
 
                 total_loss += float(loss.item())
 
-                # === Periodically sync target network with online network ===
+                # === Periodically sync target network with online network [Discrete Jumps] === 
                 # if global_step % sync_interval == 0:
                 #     target_model.load_state_dict(model.state_dict())
                 # === Soft-sync target network (polyak) ===
                 with torch.no_grad():
                     polyac_tau = 0.002   # (try 0.002–0.005)
-                    # if epsi > 0.25 and epsi <=0.4:
-                    #     polyac_tau = 0.003
                     for pt, p in zip(target_model.parameters(), model.parameters()):
                         pt.mul_(1 - polyac_tau).add_(polyac_tau * p)
 
@@ -461,14 +436,6 @@ def save_model_and_config(model, train_config,run_config, feature_config, env, b
         env          : Environment object containing start_time and end_time attributes
         base_dir     : Base directory for saving artifacts
     """
-    # now = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    # # start_ts = env.start_time.strftime("%Y%m%d-%H%M%S")
-    # # end_ts   = env.end_time.strftime("%Y%m%d-%H%M%S")
-    # base_dir = os.path.join(Path(__file__).parent.parent,base_dir)
-    # print(base_dir)
-    # folder_name = f"{now}"
-    # save_path = os.path.join(base_dir, folder_name)
-    # os.makedirs(save_path, exist_ok=True)
     save_path = base_dir
 
     # Save model weights
