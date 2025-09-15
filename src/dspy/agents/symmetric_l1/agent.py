@@ -9,9 +9,8 @@ class SymmetricL1Agent:
         
     ):
         """
-        Symmetric L1 agent that always quotes at second level (best ± tick)
-        with inventory-aware quantity sizing.
-
+        Symmetric L1 agent that always quotes at best level
+=
         Args:
             tick_size (float): Minimum price increment.
             base_quote_size (float): Default quantity to quote when neutral.
@@ -39,8 +38,8 @@ class SymmetricL1Agent:
             dict: Quotes {"bid_px", "bid_qty", "ask_px", "ask_qty"}
         """
         
-        bid_px = best_bid #- self.tick_size
-        ask_px = best_ask #+ self.tick_size
+        bid_px = best_bid
+        ask_px = best_ask
 
         qty = self.base_quote_size
         inv = getattr(self, "inventory", 0)

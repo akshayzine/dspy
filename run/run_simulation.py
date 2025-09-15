@@ -48,17 +48,14 @@ def run_simulation(config: dict):
     simulator_mode   = config["simulator_mode"]
     eval_log_flag    = config["eval_log_flag"]
     std_flag         = config["standard_scaling_feat"]
-    comp_system        = config["comp_system"]
+    folder_label     = config["label"]
 
     # ---- Reproducibility: set seeds up-front ----
     seed = config.get("seed", 42)
     set_global_seeds(seed, deterministic=True)
 
     t_device = get_torch_device(config["device"])
-    print("Using device:", t_device)
-    # # Cap PyTorch threads when on CPU
-    # if t_device.type == "cpu":
-    #     _configure_torch_threads_cpu()
+   
 
     loader = get_dataset(dataset_name)
     all_books, all_ts = [], []
@@ -72,8 +69,8 @@ def run_simulation(config: dict):
     active_age_flag = 'active_order_age' in feature_config.keys()
     pending_age_flag = 'active_order_age' in feature_config.keys()
     
-    now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    print('Sim started at:', now)
+    # now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # print('Sim started at:', now)
 
     for interval in intervals:
         start_str = interval["start"]
@@ -89,64 +86,16 @@ def run_simulation(config: dict):
             type="book_snapshot_25",
             lazy=False
         )
-        print(len(df),"dfdsfasfs")
-        # Get features from the book data
-        if comp_system =='personal':
-            num_chunks = 10
-            chunk_size = len(df) // num_chunks # Use integer division
-            processed_data_dir = Path(__file__).parent.parent/ "chunk_data"
-            print(processed_data_dir)
-            processed_data_dir.mkdir(parents=True, exist_ok=True)
-            print(f"Splitting the DataFrame into {num_chunks} chunks of approximately {chunk_size} rows each.")
-
-            # 3. Loop through each chunk, process it, and save it to disk
-            
-            for i in range(num_chunks):
-                feature_cols = []
-                print(f"--- Processing chunk {i+1}/{num_chunks} ---")
-                
-                # Calculate the start offset for the slice
-                offset = i * chunk_size
-                
-                # Get the current chunk using a simple slice
-                df_chunk = df.slice(offset, chunk_size)
-
-                # Apply feature engineering to the chunk
-                print(f"  - Applying batch features...")
-                df_processed_chunk, feature_cols = apply_batch_features(df_chunk, feature_config,std_flag)
-                feature_cols = [col for col in feature_cols if df_processed_chunk[col].dtype != pl.Datetime]
-
-                # Save the processed chunk to disk
-                output_path = processed_data_dir / f"processed_chunk_{i}.parquet"
-                print(f"  - Saving processed chunk to {output_path}")
-                df_processed_chunk.write_parquet(output_path)
-
-            # 4. Release memory of the huge raw DataFrame
-            print("\nReleasing memory of the original raw DataFrame...")
-            del df
-            gc.collect()
-
-
-            # 5. Load all the processed chunks from disk
-            print("--- Loading all processed chunks from disk ---")
-            all_processed_files = list(processed_data_dir.glob("*.parquet"))
-            # df = pl.read_parquet(all_processed_files)
-            df = pl.scan_parquet(all_processed_files) 
-        
-        else:
-            df, feature_cols = apply_batch_features(df, feature_config, std_flag)
-            feature_cols = [col for col in feature_cols if df[col].dtype != pl.Datetime]
-
-        #Drop mid price as feature
-        # feature_cols = [col for col in feature_cols if col == 'mid']
+    
+        df, feature_cols = apply_batch_features(df, feature_config, std_flag)
+        feature_cols = [col for col in feature_cols if df[col].dtype != pl.Datetime]
         
 
         feature_length = (len(feature_cols)
                           + (1 if inventory_feature_flag else 0) + (4 if active_quotes_flag else 0) +(4 if pending_quotes_flag else 0)
                           +(2 if active_age_flag else 0) + (2 if pending_age_flag else 0) 
                           + (2 if active_age_flag or active_quotes_flag else 0) + (2 if pending_age_flag or pending_quotes_flag else 0 ))
-        print(f"Feature length: {feature_length}")  
-        # print(f"feature columns: {feature_cols}")
+
         #Get agent from the config
         agent = get_agent(config,feature_length)
         #Get simulator
@@ -169,13 +118,14 @@ def run_simulation(config: dict):
             cost_in_bps=cost_in_bps,
             fixed_cost=fixed_cost,
             simulator_mode=simulator_mode,
-            eval_log_flag = eval_log_flag
+            eval_log_flag = eval_log_flag,
+            folder_label = folder_label
         )
         
         sim.cash = initial_cash
         sim.prev_cash = initial_cash
 
-        print(f"\nRunning simulation for interval {start_str} → {end_str}")
+        # print(f"\nRunning simulation for interval {start_str} → {end_str}")
 
 
         if simulator_mode == "train":
@@ -214,27 +164,16 @@ def run_simulation(config: dict):
                 sim.save_eval_log(run_start, run_end)
 
 
-            print(f"Simulation complete for interval {start_str} → {end_str}")
-            print("\n--- Simulation Complete ---")
-            print(f"Final Inventory : {sim.inventory}")
-            print(f"Final Cash      : {sim.cash}")
-            print(f"Final PnL       : {sim.realized_pnl}")
+            # print(f"Simulation clete for interval {start_str} → {end_str}")
+            # print("\n--- Simulation Complete ---")
+            # print(f"Final Inventory : {sim.inventory}")
+            # print(f"Final Cash      : {sim.cash}")
+            # print(f"Final PnL       : {sim.realized_pnl}")
 
-    now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    print('Sim ended at:', now)  
+    # now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # print('Sim ended at:', now)  
 
 
-# --- thread params ---
-def _configure_torch_threads_cpu():
-    import os, torch
-    n = int(os.getenv("OMP_NUM_THREADS", "6"))
-    torch.set_num_threads(n)
-    try:
-        torch.set_num_interop_threads(max(1, n // 2))
-    except AttributeError:
-        pass
-    # optional: print
-    print(f"[Torch CPU] threads={torch.get_num_threads()} interop=~{max(1, n//2)}")
 
 # ---------- Entrypoint ----------
 

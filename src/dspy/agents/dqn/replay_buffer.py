@@ -7,7 +7,6 @@ class SimpleReplayBuffer:
     """
     Minimal replay buffer:
       - Stores transitions in preallocated CPU torch tensors.
-      - No CUDA-specific branches.
       - sample(..., device=...) moves only the sampled batch to the training device.
     """
     def __init__(self, state_dim: int, capacity: int, state_dtype: torch.dtype = torch.float32):
